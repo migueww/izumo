@@ -21,8 +21,9 @@ must be on PATH; if it is missing, point the user to https://github.com/migueww/
   Decisions saying why the repo joined.
 - **TASK.md holds only what git can't tell:** goal, status / next step, decisions, open
   items. Never list repos, branches or PRs there; `izumo ls <task> --json` has them.
-- **Before ending a session**, update "Status / next step" so the next session, or the
-  user reading it in the morning, knows where things stand.
+- **Before ending a session**, update "Status / next step" with the next thing a person
+  does ("test a handover in hml", "decide the template item"), never PR or merge state:
+  that changes after your session ends, and `izumo ls` always has it right.
 - **State:** `izumo ls <task> --json`. Add `--fetch` when freshness matters (after a
   merge or promotion). The `agent` field comes from this plugin's hooks; don't write
   `.agent` yourself.

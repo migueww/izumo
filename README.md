@@ -64,7 +64,7 @@ izumo done --dry-run && izumo done            # remove what has shipped
 | `new <task> [repo...] [--branch B] [--base BRANCH]` | Creates `tasks/<task>/` with a worktree per repo, `TASK.md`, `AGENTS.md`, `CLAUDE.md` and a VS Code workspace. Uses `B` if it already exists locally or on origin, else creates it from the base. |
 | `add <repo...> [--task T]` | Adds repos to a task. |
 | `adopt <worktree...> [--task T]` | Moves worktrees you made by hand into a task. Creates the task if needed, on the first worktree's branch. |
-| `ls [task...] [--json] [--fetch]` | Stage per repo: `empty` (no commits yet), `wip`, `pr` (open), `base` (merged, not shipped), `prod`. Plus `dirty`, unpushed commits and what the task's agent is doing. Reads the last fetch unless you pass `--fetch`. Plain `izumo` runs it. |
+| `ls [task...] [--json] [--fetch]` | Stage per repo: `empty` (no commits yet), `wip`, `pr` (open, with review decision and CI: `approved`, `changes-requested`, `ci:failing`...), `base` (merged, not shipped), `prod`. Plus modified and untracked files, unpushed commits, what the task's agent is doing, and `[ready: izumo done]` when `done` would take the task. Reads the last fetch unless you pass `--fetch`. Plain `izumo` runs it. |
 | `done [task...] [--dry-run]` | Fetches, then removes tasks whose repos are all in `prod` or `empty` (at least one in `prod`). No args: sweeps all tasks. |
 | `rm <task...> [--dry-run]` | Removes a task even if it never shipped: a review, an abandoned idea. |
 

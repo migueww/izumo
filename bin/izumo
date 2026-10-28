@@ -3,7 +3,7 @@
 # https://github.com/migueww/izumo (MIT)
 set -euo pipefail
 
-VERSION=0.2.0
+VERSION=0.3.0
 GH=${IZUMO_GH:-gh}
 
 say() { echo "izumo: $*" >&2; }
@@ -138,7 +138,8 @@ write_task_files() {
 This folder is an izumo task: each subfolder is a git worktree of one repo, all on
 the task's branch. Read TASK.md first and keep it current. It holds only what git
 can't tell: goal, status / next step, decisions and open items. Repos, branches and
-PRs come from `izumo ls <task>`. Need another repo? Run `izumo add <repo>` from here.
+PR state come from `izumo ls <task>`, so never write them here: the next step is the
+next thing a person does. Need another repo? Run `izumo add <repo>` from here.
 EOF
   printf '@AGENTS.md\n@TASK.md\n' > "$dir/CLAUDE.md"
 }
@@ -180,11 +181,24 @@ add_repos() {
   done
 }
 
-# sets R_BRANCH R_DIRTY R_UNPUSHED R_PR R_STAGE: empty|wip|pr|base|prod|detached
+# one TSV line per PR: url state mergeCommit head review ci, "-" for empty fields (IFS tab collapses them)
+PR_JQ='.[0] // empty | (.statusCheckRollup // []) as $c | [
+  .url, .state, (.mergeCommit.oid // "-"), .headRefOid,
+  (if (.reviewDecision // "") == "" then "-" else .reviewDecision end),
+  (if ($c | length) == 0 then "-"
+   elif any($c[]; (.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED|STARTUP_FAILURE")) then "failing"
+   elif any($c[]; (.status // "COMPLETED") != "COMPLETED" or (.state // "") == "PENDING" or (.state // "") == "EXPECTED") then "running"
+   else "passing" end)
+] | @tsv'
+
+# sets R_BRANCH R_DIRTY R_MODIFIED R_UNTRACKED R_UNPUSHED R_PR R_REVIEW R_CI
+# and R_STAGE: empty|wip|pr|base|prod|detached
 repo_state() {
-  local wt=$TASKS/$1/$2 src=$ROOT/$2 head created base prod line state merge headref
-  R_BRANCH=$(git -C "$wt" branch --show-current) R_PR= R_DIRTY=false
-  [ -z "$(git -C "$wt" status --porcelain)" ] || R_DIRTY=true
+  local wt=$TASKS/$1/$2 src=$ROOT/$2 head created base prod line state merge headref review ci
+  R_BRANCH=$(git -C "$wt" branch --show-current) R_PR= R_REVIEW= R_CI=
+  read -r R_MODIFIED R_UNTRACKED <<<"$(git -C "$wt" status --porcelain | awk '/^\?\?/ {u++; next} {m++} END {print m + 0, u + 0}')"
+  R_DIRTY=false
+  if [ $((R_MODIFIED + R_UNTRACKED)) -gt 0 ]; then R_DIRTY=true; fi
   head=$(git -C "$wt" rev-parse HEAD)
   R_UNPUSHED=$(git -C "$wt" rev-list --count HEAD --not --remotes)
   if [ -z "$R_BRANCH" ]; then R_STAGE=detached; return; fi
@@ -200,12 +214,18 @@ repo_state() {
   case $R_STAGE in empty|prod) return;; esac
   command -v "$GH" >/dev/null || return 0
   line=$(cd "$wt" && "$GH" pr list --head "$R_BRANCH" --state all --limit 1 \
-    --json url,state,mergeCommit,headRefOid \
-    --jq '.[0] // empty | [.url, .state, (.mergeCommit.oid // "-"), .headRefOid] | @tsv' 2>/dev/null) || return 0
+    --json url,state,mergeCommit,headRefOid,reviewDecision,statusCheckRollup --jq "$PR_JQ" 2>/dev/null) || return 0
   [ -n "$line" ] || return 0
-  IFS=$'\t' read -r R_PR state merge headref <<<"$line"
+  IFS=$'\t' read -r R_PR state merge headref review ci <<<"$line"
   case $state in
-    OPEN) R_STAGE=pr;;
+    OPEN)
+      R_STAGE=pr
+      case $review in
+        APPROVED) R_REVIEW=approved;;
+        CHANGES_REQUESTED) R_REVIEW=changes-requested;;
+        REVIEW_REQUIRED) R_REVIEW=review-required;;
+      esac
+      if [ "$ci" != - ]; then R_CI=$ci; fi;;
     MERGED)
       R_STAGE=base
       if is_ancestor "$wt" "$merge" "$prod"; then R_STAGE=prod; fi
@@ -299,7 +319,7 @@ cmd_adopt() {
 }
 
 cmd_ls() {
-  local json=false fetch=false tasks=() t r n=0 tmp seen=' ' tsep= rsep= flags removing
+  local json=false fetch=false tasks=() t r n=0 tmp seen=' ' tsep= rsep= flags removing lines shipped ready
   while [ $# -gt 0 ]; do
     case $1 in
       --json) json=true;;
@@ -330,7 +350,8 @@ cmd_ls() {
     mkdir -p "$tmp/$t"
     for r in $(worktrees "$t"); do
       ( load_task "$t" && repo_state "$t" "$r" &&
-        printf '%s\037%s\037%s\037%s\037%s\n' "$R_BRANCH" "$R_STAGE" "$R_DIRTY" "$R_UNPUSHED" "$R_PR" > "$tmp/$t/$r" ) &
+        printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' "$R_BRANCH" "$R_STAGE" "$R_MODIFIED" \
+          "$R_UNTRACKED" "$R_UNPUSHED" "$R_PR" "$R_REVIEW" "$R_CI" > "$tmp/$t/$r" ) &
       n=$((n + 1))
       if [ $((n % 8)) -eq 0 ]; then wait; fi
     done
@@ -342,35 +363,46 @@ cmd_ls() {
     agent_of "$t"
     removing=false
     if [ -f "$TASKS/$t/.removing" ]; then removing=true; fi
-    if $json; then
-      printf '%s\n  { "task": %s, "path": %s, "goal": %s, "removing": %s, "agent": ' \
-        "$tsep" "$(json_str "$t")" "$(json_str "$TASKS/$t")" "$(json_str "$(goal "$t")")" "$removing"
-      if [ -n "$A_STATE" ]; then printf '{ "state": %s, "since": %s }' "$(json_str "$A_STATE")" "$A_SINCE"; else printf null; fi
-      printf ', "repos": ['
-      tsep=, rsep=
-    else
-      printf '%s' "$t"
-      if [ -n "$A_STATE" ]; then printf '  [agent %s %s]' "$A_STATE" "$(ago "$A_SINCE")"; fi
-      if $removing; then printf '  [removal stopped halfway: izumo rm %s]' "$t"; fi
-      printf '  %s\n' "$(goal "$t")"
-    fi
+    # repos first: the header says whether done would take the task
+    lines= rsep= shipped=false ready=true
     for r in $(worktrees "$t"); do
-      R_BRANCH=? R_STAGE=error R_DIRTY=false R_UNPUSHED=0 R_PR=
+      R_BRANCH=? R_STAGE=error R_MODIFIED=0 R_UNTRACKED=0 R_UNPUSHED=0 R_PR= R_REVIEW= R_CI=
       if [ -f "$tmp/$t/$r" ]; then
-        IFS=$'\037' read -r R_BRANCH R_STAGE R_DIRTY R_UNPUSHED R_PR < "$tmp/$t/$r"
+        IFS=$'\037' read -r R_BRANCH R_STAGE R_MODIFIED R_UNTRACKED R_UNPUSHED R_PR R_REVIEW R_CI < "$tmp/$t/$r"
       fi
+      case $R_STAGE in prod) shipped=true;; empty) ;; *) ready=false;; esac
+      if [ $((R_MODIFIED + R_UNTRACKED + R_UNPUSHED)) -gt 0 ]; then ready=false; fi
       if $json; then
-        printf '%s\n    { "repo": %s, "branch": %s, "stage": "%s", "dirty": %s, "unpushed": %s, "pr": %s }' \
-          "$rsep" "$(json_str "$r")" "$(json_str "$R_BRANCH")" "$R_STAGE" "$R_DIRTY" "$R_UNPUSHED" "$(json_str "$R_PR")"
+        R_DIRTY=false
+        if [ $((R_MODIFIED + R_UNTRACKED)) -gt 0 ]; then R_DIRTY=true; fi
+        lines="$lines$rsep$(printf '\n    { "repo": %s, "branch": %s, "stage": "%s", "dirty": %s, "modified": %s, "untracked": %s, "unpushed": %s, "pr": %s, "review": %s, "ci": %s }' \
+          "$(json_str "$r")" "$(json_str "$R_BRANCH")" "$R_STAGE" "$R_DIRTY" "$R_MODIFIED" "$R_UNTRACKED" \
+          "$R_UNPUSHED" "$(json_str "$R_PR")" "$(json_str "$R_REVIEW")" "$(json_str "$R_CI")")"
         rsep=,
       else
         flags=
-        if $R_DIRTY; then flags="$flags dirty"; fi
+        if [ "$R_MODIFIED" -gt 0 ]; then flags="$flags $R_MODIFIED-modified"; fi
+        if [ "$R_UNTRACKED" -gt 0 ]; then flags="$flags $R_UNTRACKED-untracked"; fi
         if [ "$R_UNPUSHED" -gt 0 ]; then flags="$flags $R_UNPUSHED-unpushed"; fi
-        printf '  %-32s %-36s %-6s%s %s\n' "$r" "$R_BRANCH" "$R_STAGE" "$flags" "$R_PR"
+        if [ -n "$R_REVIEW" ]; then flags="$flags $R_REVIEW"; fi
+        if [ -n "$R_CI" ]; then flags="$flags ci:$R_CI"; fi
+        lines="$lines$(printf '  %-32s %-36s %-6s%s %s' "$r" "$R_BRANCH" "$R_STAGE" "$flags" "$R_PR")"$'\n'
       fi
     done
-    if $json; then printf '\n  ] }'; fi
+    if ! $shipped || $removing; then ready=false; fi
+    if $json; then
+      printf '%s\n  { "task": %s, "path": %s, "goal": %s, "ready": %s, "removing": %s, "agent": ' \
+        "$tsep" "$(json_str "$t")" "$(json_str "$TASKS/$t")" "$(json_str "$(goal "$t")")" "$ready" "$removing"
+      if [ -n "$A_STATE" ]; then printf '{ "state": %s, "since": %s }' "$(json_str "$A_STATE")" "$A_SINCE"; else printf null; fi
+      printf ', "repos": [%s\n  ] }' "$lines"
+      tsep=,
+    else
+      printf '%s' "$t"
+      if $ready; then printf '  [ready: izumo done]'; fi
+      if [ -n "$A_STATE" ]; then printf '  [agent %s %s]' "$A_STATE" "$(ago "$A_SINCE")"; fi
+      if $removing; then printf '  [removal stopped halfway: izumo rm %s]' "$t"; fi
+      printf '  %s\n%s' "$(goal "$t")" "$lines"
+    fi
   done
   if $json; then printf '\n]\n'; fi
 }
@@ -389,7 +421,7 @@ remove_task() {
   for r in $(worktrees "$t"); do
     git -C "$ROOT/$r" fetch --quiet origin 2>/dev/null || say "$r: fetch failed, using local refs"
     repo_state "$t" "$r"
-    if $R_DIRTY; then why="$why; $r has uncommitted changes"; fi
+    if $R_DIRTY; then why="$why; $r has uncommitted changes ($R_MODIFIED modified, $R_UNTRACKED untracked)"; fi
     if [ "$R_UNPUSHED" -gt 0 ]; then why="$why; $r has $R_UNPUSHED unpushed commit(s)"; fi
     if [ "$mode" = done ]; then
       case $R_STAGE in

@@ -66,7 +66,8 @@ refuses 'a is already in task' add a --task feat-x
 
 # nothing that would lose work gets removed
 echo x > tasks/feat-x/a/f
-refuses 'a has uncommitted changes' rm feat-x
+refuses 'a has uncommitted changes (0 modified, 1 untracked)' rm feat-x
+says '1-untracked' ls feat-x
 git -C tasks/feat-x/a add f && git -C tasks/feat-x/a commit -qm f
 refuses 'a has 1 unpushed commit(s)' rm feat-x
 git -C tasks/feat-x/a push -q origin feat-x
@@ -76,7 +77,10 @@ says '"repo": "b", "branch": "feat-x", "stage": "empty"' ls --json
 # done waits for prod: merge-commit flow
 dev fetch -q && dev merge -q --no-ff origin/feat-x -m merge && dev push -q origin hml
 refuses 'a is not in prod (base)' done feat-x
+out=$("$IZ" ls feat-x) && ! grep -q 'ready' <<<"$out" || fail "ready before prod: $out"
 promote
+says 'feat-x  [ready: izumo done]' ls --fetch feat-x
+says '"ready": true' ls --json feat-x
 says 'would remove feat-x' done feat-x --dry-run
 [ -d tasks/feat-x ] || fail "dry-run removed"
 iz done >/dev/null
@@ -90,10 +94,14 @@ iz new feat-y a >/dev/null
 echo y > tasks/feat-y/a/y && git -C tasks/feat-y/a add y && git -C tasks/feat-y/a commit -qm y
 git -C tasks/feat-y/a push -q origin feat-y
 head=$(git -C tasks/feat-y/a rev-parse HEAD)
+FAKE_PR="https://x/pull/1	OPEN	-	$head	CHANGES_REQUESTED	failing" IZUMO_GH="$T/bin/gh" \
+  says 'pr     changes-requested ci:failing https://x/pull/1' ls feat-y
+FAKE_PR="https://x/pull/1	OPEN	-	$head	-	-" IZUMO_GH="$T/bin/gh" \
+  says '"stage": "pr", "dirty": false, "modified": 0, "untracked": 0, "unpushed": 0, "pr": "https://x/pull/1", "review": "", "ci": ""' ls --json feat-y
 dev checkout -q hml && dev fetch -q && dev merge -q --squash origin/feat-y >/dev/null && dev commit -qm "y (#1)"
 dev push -q origin hml && dev push -q origin --delete feat-y
 git -C a update-ref -d refs/remotes/origin/feat-y
-export FAKE_PR="https://x/pull/1	MERGED	$(dev rev-parse HEAD)	$head"
+export FAKE_PR="https://x/pull/1	MERGED	$(dev rev-parse HEAD)	$head	-	-"
 refuses 'a has 1 unpushed commit(s)' rm feat-y  # without gh, squashed work looks unpushed
 IZUMO_GH="$T/bin/gh" refuses 'a is not in prod (base)' done feat-y
 promote
