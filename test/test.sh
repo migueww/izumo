@@ -40,6 +40,11 @@ for r in a b; do
   git -C "$T/dev/$r" push -q origin main main:hml
   git clone -q "$T/remote/$r.git" "$T/root/$r"
 done
+# c only has main: BASE=hml must fall back to origin's default branch
+git init -q --bare "$T/remote/c.git"
+git clone -q "$T/remote/c.git" "$T/dev/c" 2>/dev/null
+git -C "$T/dev/c" commit -q --allow-empty -m init && git -C "$T/dev/c" push -q origin main
+git clone -q "$T/remote/c.git" "$T/root/c"
 dev fetch -q && dev checkout -q hml
 cat > "$T/root/.izumo" <<'EOF'
 BASE=hml
@@ -107,5 +112,10 @@ refuses 'unknown file notes.txt' rm review
 rm tasks/review/notes.txt
 iz rm review >/dev/null || fail "rm review"
 [ ! -e tasks/review ] || fail "review folder still there"
+
+# mixed root: a repo without BASE starts from its default branch
+iz new mixed c >/dev/null
+[ "$(git -C tasks/mixed/c rev-parse HEAD)" = "$(git -C c rev-parse origin/main)" ] || fail "fallback to default branch"
+iz rm mixed >/dev/null || fail "rm mixed"
 
 echo ok

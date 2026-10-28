@@ -62,6 +62,7 @@ deleted looks unpushed, and izumo keeps it.
 ```sh
 BASE=develop        # branch new work starts from (default: origin's default branch)
 PROD=main           # branch that means "shipped" (default: BASE)
+                    # a repo without BASE or PROD on origin uses its default branch instead
 PREFIX=feat/        # prefix for branches izumo names (default: none)
 
 post_add() {        # runs inside each new worktree; TASK REPO SRC WT BRANCH are set

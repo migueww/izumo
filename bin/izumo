@@ -45,16 +45,23 @@ json_str() {
 
 is_ancestor() { git -C "$1" merge-base --is-ancestor "$2" "$3" 2>/dev/null; }
 
-# origin/<branch> work starts from: task --base, else BASE, else origin's default branch
+# origin/<branch> work starts from: task --base, else BASE, else origin's default branch.
+# A repo without that branch on origin (mixed roots) falls back to its default branch.
 base_ref() {
   local b=${2:-$BASE}
-  if [ -n "$b" ]; then echo "origin/$b"; return; fi
+  if [ -n "$b" ] && git -C "$1" show-ref --verify --quiet "refs/remotes/origin/$b"; then
+    echo "origin/$b"; return
+  fi
   git -C "$1" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null ||
     die "$(basename "$1"): origin/HEAD unknown; set BASE in .izumo or run: git -C '$1' remote set-head origin -a"
 }
 
 prod_ref() {
-  if [ -n "$PROD" ]; then echo "origin/$PROD"; else base_ref "$@"; fi
+  if [ -n "$PROD" ] && git -C "$1" show-ref --verify --quiet "refs/remotes/origin/$PROD"; then
+    echo "origin/$PROD"
+  else
+    base_ref "$@"
+  fi
 }
 
 load_task() {
