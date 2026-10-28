@@ -28,7 +28,10 @@ chmod +x ~/.local/bin/izumo
 ```
 
 Needs bash and git ≥ 2.22. Optional: [`gh`](https://cli.github.com), for PR state and
-squash-merge detection. On Windows it runs in Git Bash.
+squash-merge detection.
+
+**Windows:** clone the repo and put its `bin` folder on your PATH. `izumo.cmd` runs the
+script with Git for Windows' bash, so `izumo` works in PowerShell, cmd and Git Bash.
 
 ## Use
 

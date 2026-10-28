@@ -276,6 +276,8 @@ remove_task() {
     fi
   done
   if [ "$mode" = done ] && ! $shipped && [ -z "$why" ]; then why="; nothing reached prod"; fi
+  # Windows locks a shell's cwd, so removal would stop halfway; elsewhere the shell is left in a deleted dir
+  case "$(pwd -P)/" in "$dir"/*) why="$why; you are inside it, cd out first";; esac
   for f in "$dir"/* "$dir"/.[!.]*; do
     [ -e "$f" ] || continue
     f=$(basename "$f")

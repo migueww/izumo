@@ -110,6 +110,7 @@ refuses 'nothing reached prod' done review
 touch tasks/review/notes.txt
 refuses 'unknown file notes.txt' rm review
 rm tasks/review/notes.txt
+(cd tasks/review/b && refuses 'you are inside it' rm review)
 iz rm review >/dev/null || fail "rm review"
 [ ! -e tasks/review ] || fail "review folder still there"
 
