@@ -437,7 +437,7 @@ remove_task() {
       git -C "$ROOT/$r" branch -D -q "$br" || say "$r: could not delete branch $br"
     fi
   done 3< "$dir/.removing"
-  rm -rf "${dir:?}"
+  rm -rf "${dir:?}" || die "$t: worktrees and branches are gone, but the folder is in use; delete $dir once nothing has it open"
   echo "removed $t"
 }
 
