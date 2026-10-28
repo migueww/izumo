@@ -71,8 +71,10 @@ izumo done --dry-run && izumo done            # remove what has shipped
 Neither `done` nor `rm` removes a task that has uncommitted changes, unpushed commits or
 files it didn't create. "Unpushed" means the commit is on no remote branch and is not
 the head of a merged PR. Without `gh`, squash-merged work whose remote branch was
-deleted looks unpushed, and izumo keeps it. If a removal stops halfway (a locked file on
-Windows, say), `ls` flags the task and running the same command again finishes it.
+deleted looks unpushed, and izumo keeps it. On Windows it also keeps a task whose folder
+a program has open (an editor, a terminal), since Windows would stop the removal halfway.
+If a removal stops halfway anyway, `ls` flags the task and running the same command
+again finishes it.
 
 ## Configure
 

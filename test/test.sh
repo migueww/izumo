@@ -122,6 +122,18 @@ rm tasks/review/notes.txt
 iz rm review >/dev/null || fail "rm review"
 [ ! -e tasks/review ] || fail "review folder still there"
 
+# Windows: a folder some program has open keeps the task whole instead of stopping halfway
+case $(uname -s) in MINGW*|MSYS*|CYGWIN*)
+  iz new busy a b >/dev/null
+  (cd tasks/busy/b && exec sleep 30) &
+  busy=$!
+  sleep 1
+  refuses 'a program has the folder open' rm busy
+  [ -f tasks/busy/a/.git ] && [ ! -e tasks/busy/.removing ] || fail "busy: removal started"
+  kill $busy && wait $busy 2>/dev/null || true
+  iz rm busy >/dev/null || fail "rm busy";;
+esac
+
 # mixed root: a repo without BASE starts from its default branch
 iz new mixed c >/dev/null
 [ "$(git -C tasks/mixed/c rev-parse HEAD)" = "$(git -C c rev-parse origin/main)" ] || fail "fallback to default branch"
