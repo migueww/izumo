@@ -97,8 +97,8 @@ export FAKE_PR="https://x/pull/1	MERGED	$(dev rev-parse HEAD)	$head"
 refuses 'a has 1 unpushed commit(s)' rm feat-y  # without gh, squashed work looks unpushed
 IZUMO_GH="$T/bin/gh" refuses 'a is not in prod (base)' done feat-y
 promote
-git -C a fetch -q  # ls reads the last fetch; done fetches by itself
-IZUMO_GH="$T/bin/gh" says 'prod' ls feat-y
+IZUMO_GH="$T/bin/gh" says 'base' ls feat-y          # ls reads the last fetch...
+IZUMO_GH="$T/bin/gh" says 'prod' ls --fetch feat-y  # ...unless asked to fetch
 IZUMO_GH="$T/bin/gh" iz done feat-y >/dev/null || fail "squash: done after prod"
 
 # review: existing remote branch is checked out, never shipped, removed with rm
@@ -118,5 +118,53 @@ iz rm review >/dev/null || fail "rm review"
 iz new mixed c >/dev/null
 [ "$(git -C tasks/mixed/c rev-parse HEAD)" = "$(git -C c rev-parse origin/main)" ] || fail "fallback to default branch"
 iz rm mixed >/dev/null || fail "rm mixed"
+
+# bare izumo: ls inside a root, usage outside
+iz new bare a >/dev/null
+out=$("$IZ") && grep -q '^bare' <<<"$out" || fail "bare izumo inside a root: $out"
+out=$(cd "$T" && "$IZ") && grep -q 'izumo new' <<<"$out" || fail "bare izumo outside a root: $out"
+
+# agent state from the Claude Code hooks: written inside a task, silent anywhere else
+(cd tasks/bare/a && iz _agent waiting)
+says '[agent waiting' ls bare
+says '"agent": { "state": "waiting"' ls bare --json
+(cd "$T" && iz _agent working) || fail "_agent outside a task must exit 0"
+CLAUDE_PROJECT_DIR="$T/root/tasks/bare" iz _agent working
+says '[agent working' ls bare
+(cd tasks/bare && iz _agent end)
+[ ! -e tasks/bare/.agent ] || fail "_agent end left .agent"
+
+# a removal that stops halfway resumes, and only deletes what it had listed
+(cd tasks/bare && iz add b >/dev/null)
+git -C b worktree lock "$T/root/tasks/bare/b"  # a goes first, then removal stops at b
+refuses 'run the same command to finish' rm bare
+git -C b worktree unlock "$T/root/tasks/bare/b"
+mkdir tasks/bare/a  # leftover of a, as Windows leaves a locked cwd behind
+says 'removal stopped halfway' ls bare
+mkdir tasks/bare/notes
+refuses 'unknown file notes' rm bare  # resuming deletes only what it had listed
+rmdir tasks/bare/notes
+iz rm bare >/dev/null || fail "resume rm"
+[ ! -e tasks/bare ] || fail "resumed rm left the folder"
+git -C a show-ref --quiet refs/heads/bare && fail "resumed rm left branch in a"
+git -C b show-ref --quiet refs/heads/bare && fail "resumed rm left branch in b"
+
+# adopt: a hand-made worktree moves into a new task named after nothing but its branch
+git -C a worktree add -q "$T/root/old-wt" -b old-branch origin/hml
+iz adopt old-wt --task adopted >/dev/null
+[ -f tasks/adopted/a/.git ] && [ ! -e old-wt ] || fail "adopt did not move the worktree"
+[ "$(git -C tasks/adopted/a branch --show-current)" = old-branch ] || fail "adopt branch"
+grep -q 'T_BRANCH=old-branch' tasks/adopted/.task || fail "adopted task branch"
+git -C a worktree list | grep -q 'tasks/adopted/a' || fail "git does not know the new path"
+refuses 'not a git worktree' adopt tasks --task adopted
+iz rm adopted >/dev/null || fail "rm adopted"
+
+# TASK_TEMPLATE: the first section is the goal, whatever its heading
+printf '# {{task}}\n\n## Objetivo\nfazer x\n\n## Decisoes\n' > tpl.md
+echo 'TASK_TEMPLATE=tpl.md' >> .izumo
+iz new tpl >/dev/null
+head -1 tasks/tpl/TASK.md | grep -qx '# tpl' || fail "template not filled"
+says 'fazer x' ls tpl
+iz rm tpl >/dev/null || fail "rm tpl"
 
 echo ok

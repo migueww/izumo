@@ -55,7 +55,7 @@ cd ~/code && touch .izumo                     # mark the multi-repo root once
 izumo new rollout-flag billing-service web-front
 cd tasks/rollout-flag/web-front
 izumo add infra                               # the task grew; task inferred from cwd
-izumo ls                                      # every task, repo, branch and stage
+izumo                                         # same as izumo ls: every task, repo, branch and stage
 izumo done --dry-run && izumo done            # remove what has shipped
 ```
 
@@ -63,14 +63,16 @@ izumo done --dry-run && izumo done            # remove what has shipped
 |---|---|
 | `new <task> [repo...] [--branch B] [--base BRANCH]` | Creates `tasks/<task>/` with a worktree per repo, `TASK.md`, `AGENTS.md`, `CLAUDE.md` and a VS Code workspace. Uses `B` if it already exists locally or on origin, else creates it from the base. |
 | `add <repo...> [--task T]` | Adds repos to a task. |
-| `ls [task...] [--json]` | Stage per repo: `empty` (no commits yet), `wip`, `pr` (open), `base` (merged, not shipped), `prod`. Plus `dirty` and unpushed commits. Reads the last fetch; it doesn't fetch. |
+| `adopt <worktree...> [--task T]` | Moves worktrees you made by hand into a task. Creates the task if needed, on the first worktree's branch. |
+| `ls [task...] [--json] [--fetch]` | Stage per repo: `empty` (no commits yet), `wip`, `pr` (open), `base` (merged, not shipped), `prod`. Plus `dirty`, unpushed commits and what the task's agent is doing. Reads the last fetch unless you pass `--fetch`. Plain `izumo` runs it. |
 | `done [task...] [--dry-run]` | Fetches, then removes tasks whose repos are all in `prod` or `empty` (at least one in `prod`). No args: sweeps all tasks. |
 | `rm <task...> [--dry-run]` | Removes a task even if it never shipped: a review, an abandoned idea. |
 
 Neither `done` nor `rm` removes a task that has uncommitted changes, unpushed commits or
 files it didn't create. "Unpushed" means the commit is on no remote branch and is not
 the head of a merged PR. Without `gh`, squash-merged work whose remote branch was
-deleted looks unpushed, and izumo keeps it.
+deleted looks unpushed, and izumo keeps it. If a removal stops halfway (a locked file on
+Windows, say), `ls` flags the task and running the same command again finishes it.
 
 ## Configure
 
@@ -81,6 +83,8 @@ BASE=develop        # branch new work starts from (default: origin's default bra
 PROD=main           # branch that means "shipped" (default: BASE)
                     # a repo without BASE or PROD on origin uses its default branch instead
 PREFIX=feat/        # prefix for branches izumo names (default: none)
+TASK_TEMPLATE=.izumo-task.md   # TASK.md template, relative to the root; {{task}} is the
+                               # task name and the first section is the goal ls shows
 
 post_add() {        # runs inside each new worktree; TASK REPO SRC WT BRANCH are set
   cp "$SRC/.env" . 2>/dev/null || true
@@ -104,6 +108,13 @@ decisions others need into the PR description.
 
 The Claude Code plugin ships the skill in [`skills/izumo`](skills/izumo/SKILL.md). Other
 agents that read `SKILL.md` can copy that folder into their own skills directory.
+
+Running several agents? The plugin's hooks record what the agent in each task is doing
+in `tasks/<task>/.agent`, and `ls` shows it: `working` after you send a prompt,
+`waiting` when it asks for a permission or an answer, `done` when its turn ends. The
+file goes away when the session ends. The hooks fire only on those events, never per
+tool call, so they cost nothing noticeable. A permission you just approved still
+shows `waiting` until the turn ends.
 
 ## Not doing
 
