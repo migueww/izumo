@@ -11,6 +11,12 @@ printf '[user]\n name = t\n email = t@t\n[init]\n defaultBranch = main\n[commit]
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 iz() { "$IZ" "$@"; }
+says() {  # says <expected text> <izumo args...>; captured, since grep -q in a pipe can SIGPIPE izumo
+  local msg=$1 out
+  shift
+  out=$("$IZ" "$@" 2>&1) || fail "izumo $*: exited $?: $out"
+  grep -qF "$msg" <<<"$out" || fail "izumo $*: expected '$msg', got: $out"
+}
 refuses() {  # refuses <expected message> <izumo args...>
   local msg=$1 out
   shift
@@ -59,14 +65,14 @@ refuses 'a has uncommitted changes' rm feat-x
 git -C tasks/feat-x/a add f && git -C tasks/feat-x/a commit -qm f
 refuses 'a has 1 unpushed commit(s)' rm feat-x
 git -C tasks/feat-x/a push -q origin feat-x
-iz ls --json | grep -q '"repo": "a", "branch": "feat-x", "stage": "wip"' || fail "ls stage wip"
-iz ls --json | grep -q '"repo": "b", "branch": "feat-x", "stage": "empty"' || fail "ls stage empty"
+says '"repo": "a", "branch": "feat-x", "stage": "wip"' ls --json
+says '"repo": "b", "branch": "feat-x", "stage": "empty"' ls --json
 
 # done waits for prod: merge-commit flow
 dev fetch -q && dev merge -q --no-ff origin/feat-x -m merge && dev push -q origin hml
 refuses 'a is not in prod (base)' done feat-x
 promote
-iz done feat-x --dry-run | grep -q 'would remove feat-x' || fail "dry-run"
+says 'would remove feat-x' done feat-x --dry-run
 [ -d tasks/feat-x ] || fail "dry-run removed"
 iz done >/dev/null
 [ ! -e tasks/feat-x ] || fail "task folder still there"
@@ -87,7 +93,7 @@ refuses 'a has 1 unpushed commit(s)' rm feat-y  # without gh, squashed work look
 IZUMO_GH="$T/bin/gh" refuses 'a is not in prod (base)' done feat-y
 promote
 git -C a fetch -q  # ls reads the last fetch; done fetches by itself
-IZUMO_GH="$T/bin/gh" iz ls feat-y | grep -q 'prod' || fail "squash: ls prod"
+IZUMO_GH="$T/bin/gh" says 'prod' ls feat-y
 IZUMO_GH="$T/bin/gh" iz done feat-y >/dev/null || fail "squash: done after prod"
 
 # review: existing remote branch is checked out, never shipped, removed with rm
