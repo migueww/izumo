@@ -1,0 +1,11 @@
+{
+  "name": "izumo",
+  "owner": { "name": "migueww" },
+  "plugins": [
+    {
+      "name": "izumo",
+      "source": "./",
+      "description": "One folder per task, one git worktree per repo."
+    }
+  ]
+}

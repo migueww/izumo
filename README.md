@@ -22,6 +22,20 @@ and removes the worktrees and branches. It refuses if any work would be lost.
 
 ## Install
 
+**Claude Code:** the plugin puts `izumo` on Claude's PATH and adds the skill that teaches
+it. Run this in a session:
+
+```
+/plugin install izumo --marketplace migueww/izumo
+```
+
+On Claude Code older than 2.1.275, run `/plugin marketplace add migueww/izumo`, then
+`/plugin install izumo@izumo`. Updates from third-party marketplaces are off by
+default: turn them on in `/plugin` → Marketplaces, or run
+`/plugin marketplace update izumo`.
+
+**Your own terminal** (also what other agents use):
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/migueww/izumo/main/bin/izumo -o ~/.local/bin/izumo
 chmod +x ~/.local/bin/izumo
@@ -88,8 +102,8 @@ Keep `TASK.md` to what git can't tell: goal, status / next step, decisions, open
 Repos, branches and PRs come from `ls`. `TASK.md` lives only on your machine, so move
 decisions others need into the PR description.
 
-A skill for Claude Code and other agents that read `SKILL.md` is in
-[`skills/izumo`](skills/izumo/SKILL.md).
+The Claude Code plugin ships the skill in [`skills/izumo`](skills/izumo/SKILL.md). Other
+agents that read `SKILL.md` can copy that folder into their own skills directory.
 
 ## Not doing
 

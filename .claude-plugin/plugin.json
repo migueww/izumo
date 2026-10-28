@@ -1,0 +1,7 @@
+{
+  "name": "izumo",
+  "description": "One folder per task, one git worktree per repo: the izumo CLI on Claude's PATH plus the skill that teaches it.",
+  "author": { "name": "migueww" },
+  "homepage": "https://github.com/migueww/izumo",
+  "license": "MIT"
+}

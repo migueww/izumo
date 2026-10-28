@@ -5,8 +5,8 @@ description: Work on multi-repo tasks with the izumo CLI, one folder per task wi
 
 # izumo
 
-`izumo` must be on PATH. If it is missing, point the user to
-https://github.com/migueww/izumo#install.
+Installed as the Claude Code plugin, `izumo` is already on your Bash PATH. Otherwise it
+must be on PATH; if it is missing, point the user to https://github.com/migueww/izumo#install.
 
 ## Rules
 
