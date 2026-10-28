@@ -285,7 +285,8 @@ remove_task() {
   fi
   for r in $(worktrees "$t"); do
     br=$(git -C "$dir/$r" branch --show-current)
-    git -C "$ROOT/$r" worktree remove "$dir/$r" || die "$t: could not remove worktree $r; stopped here"
+    # longpaths: deep node_modules otherwise stop the removal halfway on Windows
+    git -c core.longpaths=true -C "$ROOT/$r" worktree remove "$dir/$r" || die "$t: could not remove worktree $r; stopped here"
     if [ -n "$br" ]; then git -C "$ROOT/$r" branch -D -q "$br" || say "$r: could not delete branch $br"; fi
   done
   rm -rf "${dir:?}"
