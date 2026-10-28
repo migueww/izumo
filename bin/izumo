@@ -1,0 +1,339 @@
+#!/usr/bin/env bash
+# izumo: one folder per task, one git worktree per repo.
+# https://github.com/migueww/izumo (MIT)
+set -euo pipefail
+
+VERSION=0.1.0
+GH=${IZUMO_GH:-gh}
+
+say() { echo "izumo: $*" >&2; }
+die() { say "$@"; exit 1; }
+
+usage() {
+  cat <<'EOF'
+izumo: one folder per task, one git worktree per repo
+
+  izumo new <task> [repo...] [--branch B] [--base BRANCH]
+  izumo add <repo...> [--task T]
+  izumo ls [task...] [--json]
+  izumo done [task...] [--dry-run]
+  izumo rm <task...> [--dry-run]
+
+Run it anywhere under your multi-repo root, the folder holding a .izumo file.
+EOF
+}
+
+valid_name() {
+  case $1 in ''|.*|*[!A-Za-z0-9._-]*) die "invalid name: '$1'";; esac
+}
+
+find_root() {
+  local d
+  d=$(pwd -P)
+  while [ ! -f "$d/.izumo" ]; do
+    [ "$d" != / ] || die "no .izumo above $(pwd); create one at your multi-repo root: touch .izumo"
+    d=$(dirname "$d")
+  done
+  echo "$d"
+}
+
+json_str() {
+  local s=$1
+  s=${s//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\t'/\\t}; s=${s//$'\r'/}; s=${s//$'\n'/\\n}
+  printf '"%s"' "$s"
+}
+
+is_ancestor() { git -C "$1" merge-base --is-ancestor "$2" "$3" 2>/dev/null; }
+
+# origin/<branch> work starts from: task --base, else BASE, else origin's default branch
+base_ref() {
+  local b=${2:-$BASE}
+  if [ -n "$b" ]; then echo "origin/$b"; return; fi
+  git -C "$1" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null ||
+    die "$(basename "$1"): origin/HEAD unknown; set BASE in .izumo or run: git -C '$1' remote set-head origin -a"
+}
+
+prod_ref() {
+  if [ -n "$PROD" ]; then echo "origin/$PROD"; else base_ref "$@"; fi
+}
+
+load_task() {
+  valid_name "$1"
+  [ -f "$TASKS/$1/.task" ] || die "no task '$1'"
+  T_BRANCH= T_BASE=
+  . "$TASKS/$1/.task"
+}
+
+cwd_task() {
+  local p
+  p=$(pwd -P)/
+  case $p in "$TASKS"/?*/*) p=${p#"$TASKS"/}; echo "${p%%/*}";; *) return 1;; esac
+}
+
+all_tasks() {
+  local d
+  for d in "$TASKS"/*/; do
+    if [ -f "$d.task" ]; then basename "$d"; fi
+  done
+}
+
+worktrees() {
+  local d
+  for d in "$TASKS/$1"/*/; do
+    if [ -f "$d.git" ]; then basename "$d"; fi
+  done
+}
+
+write_workspace() {
+  local dir=$TASKS/$1 r sep=
+  {
+    printf '{\n  "folders": ['
+    for r in $(worktrees "$1"); do
+      printf '%s\n    { "name": %s, "path": %s }' "$sep" \
+        "$(json_str "$r ($(git -C "$dir/$r" branch --show-current))")" "$(json_str "$r")"
+      sep=,
+    done
+    printf '\n  ]\n}\n'
+  } > "$dir/$1.code-workspace"
+}
+
+write_task_files() {
+  local dir=$TASKS/$1
+  printf '# %s\n\n## Goal\n\n## Status / next step\n\n## Decisions\n\n## Open items\n' "$1" > "$dir/TASK.md"
+  cat > "$dir/AGENTS.md" <<'EOF'
+This folder is an izumo task: each subfolder is a git worktree of one repo, all on
+the task's branch. Read TASK.md first and keep it current. It holds only what git
+can't tell: goal, status / next step, decisions and open items. Repos, branches and
+PRs come from `izumo ls <task>`. Need another repo? Run `izumo add <repo>` from here.
+EOF
+  printf '@AGENTS.md\n@TASK.md\n' > "$dir/CLAUDE.md"
+}
+
+add_repos() {
+  local task=$1 repo src wt ref
+  shift
+  load_task "$task"
+  for repo; do
+    valid_name "$repo"
+    src=$ROOT/$repo wt=$TASKS/$task/$repo
+    [ -d "$src/.git" ] || die "$repo: no git clone at $src"
+    [ -e "$wt" ] && die "$repo is already in task '$task'"
+    git -C "$src" fetch --quiet origin || say "$repo: fetch failed, using local refs"
+    if git -C "$src" show-ref --verify --quiet "refs/heads/$T_BRANCH" ||
+       git -C "$src" show-ref --verify --quiet "refs/remotes/origin/$T_BRANCH"; then
+      # existing branch, local or on origin (git creates the tracking branch)
+      git -C "$src" worktree add --quiet "$wt" "$T_BRANCH"
+    else
+      ref=$(base_ref "$src" "$T_BASE")
+      git -C "$src" rev-parse --verify --quiet "$ref^{commit}" >/dev/null || die "$repo: no $ref"
+      git -C "$src" worktree add --quiet --no-track -b "$T_BRANCH" "$wt" "$ref"
+    fi
+    write_workspace "$task"
+    ( cd "$wt" && export TASK=$task REPO=$repo SRC=$src WT=$wt BRANCH=$T_BRANCH && post_add ) ||
+      say "$repo: post_add hook failed (worktree kept)"
+    echo "$wt"
+  done
+}
+
+# sets R_BRANCH R_DIRTY R_UNPUSHED R_PR R_STAGE: empty|wip|pr|base|prod|detached
+repo_state() {
+  local wt=$TASKS/$1/$2 src=$ROOT/$2 head created base prod line state merge headref
+  R_BRANCH=$(git -C "$wt" branch --show-current) R_PR= R_DIRTY=false
+  [ -z "$(git -C "$wt" status --porcelain)" ] || R_DIRTY=true
+  head=$(git -C "$wt" rev-parse HEAD)
+  R_UNPUSHED=$(git -C "$wt" rev-list --count HEAD --not --remotes)
+  if [ -z "$R_BRANCH" ]; then R_STAGE=detached; return; fi
+  # oldest reflog entry = where the branch started; still there means no work on it
+  created=$(git -C "$wt" log -g --format=%H "refs/heads/$R_BRANCH" 2>/dev/null | tail -1)
+  base=$(base_ref "$src" "$T_BASE")
+  prod=$(prod_ref "$src" "$T_BASE")
+  if [ "$head" = "$created" ]; then R_STAGE=empty
+  elif is_ancestor "$wt" "$head" "$prod"; then R_STAGE=prod
+  elif is_ancestor "$wt" "$head" "$base"; then R_STAGE=base
+  else R_STAGE=wip
+  fi
+  case $R_STAGE in empty|prod) return;; esac
+  command -v "$GH" >/dev/null || return 0
+  line=$(cd "$wt" && "$GH" pr list --head "$R_BRANCH" --state all --limit 1 \
+    --json url,state,mergeCommit,headRefOid \
+    --jq '.[0] // empty | [.url, .state, (.mergeCommit.oid // "-"), .headRefOid] | @tsv' 2>/dev/null) || return 0
+  [ -n "$line" ] || return 0
+  IFS=$'\t' read -r R_PR state merge headref <<<"$line"
+  case $state in
+    OPEN) R_STAGE=pr;;
+    MERGED)
+      R_STAGE=base
+      if is_ancestor "$wt" "$merge" "$prod"; then R_STAGE=prod; fi
+      # squash merge: the branch commits live on in the PR, so nothing is lost
+      if [ "$headref" = "$head" ]; then R_UNPUSHED=0; fi;;
+  esac
+}
+
+goal() {
+  awk '/^## /{g = /^## Goal/; next} g && NF {print; exit}' "$TASKS/$1/TASK.md" 2>/dev/null || true
+}
+
+cmd_new() {
+  local task= branch= base= repos=()
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --branch) branch=${2:?--branch needs a value}; shift 2; continue;;
+      --base) base=${2:?--base needs a value}; shift 2; continue;;
+      -*) die "unknown flag $1";;
+      *) if [ -z "$task" ]; then task=$1; else repos+=("$1"); fi;;
+    esac
+    shift
+  done
+  [ -n "$task" ] || die "usage: izumo new <task> [repo...] [--branch B] [--base BRANCH]"
+  valid_name "$task"
+  [ -e "$TASKS/$task" ] && die "task '$task' already exists"
+  branch=${branch:-$PREFIX$task}
+  git check-ref-format --branch "$branch" >/dev/null 2>&1 || die "invalid branch name: $branch"
+  mkdir -p "$TASKS/$task"
+  printf 'T_BRANCH=%q\nT_BASE=%q\n' "$branch" "$base" > "$TASKS/$task/.task"
+  write_task_files "$task"
+  write_workspace "$task"
+  if [ ${#repos[@]} -gt 0 ]; then add_repos "$task" "${repos[@]}" >/dev/null; fi
+  echo "$TASKS/$task"
+}
+
+cmd_add() {
+  local task= repos=()
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --task) task=${2:?--task needs a value}; shift 2; continue;;
+      -*) die "unknown flag $1";;
+      *) repos+=("$1");;
+    esac
+    shift
+  done
+  [ ${#repos[@]} -gt 0 ] || die "usage: izumo add <repo...> [--task T]"
+  [ -n "$task" ] || task=$(cwd_task) || die "not inside a task folder; pass --task"
+  add_repos "$task" "${repos[@]}"
+}
+
+cmd_ls() {
+  local json=false tasks=() t r tsep= rsep= flags
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --json) json=true;;
+      -*) die "unknown flag $1";;
+      *) tasks+=("$1");;
+    esac
+    shift
+  done
+  [ ${#tasks[@]} -gt 0 ] || tasks=($(all_tasks))
+  if $json; then printf '['; fi
+  for t in ${tasks[@]+"${tasks[@]}"}; do
+    load_task "$t"
+    if $json; then
+      printf '%s\n  { "task": %s, "path": %s, "goal": %s, "repos": [' \
+        "$tsep" "$(json_str "$t")" "$(json_str "$TASKS/$t")" "$(json_str "$(goal "$t")")"
+      tsep=, rsep=
+    else
+      printf '%s  %s\n' "$t" "$(goal "$t")"
+    fi
+    for r in $(worktrees "$t"); do
+      repo_state "$t" "$r"
+      if $json; then
+        printf '%s\n    { "repo": %s, "branch": %s, "stage": "%s", "dirty": %s, "unpushed": %s, "pr": %s }' \
+          "$rsep" "$(json_str "$r")" "$(json_str "$R_BRANCH")" "$R_STAGE" "$R_DIRTY" "$R_UNPUSHED" "$(json_str "$R_PR")"
+        rsep=,
+      else
+        flags=
+        if $R_DIRTY; then flags="$flags dirty"; fi
+        if [ "$R_UNPUSHED" -gt 0 ]; then flags="$flags $R_UNPUSHED-unpushed"; fi
+        printf '  %-32s %-36s %-6s%s %s\n' "$r" "$R_BRANCH" "$R_STAGE" "$flags" "$R_PR"
+      fi
+    done
+    if $json; then printf '\n  ] }'; fi
+  done
+  if $json; then printf '\n]\n'; fi
+}
+
+# done: every repo in prod (or untouched) and nothing would be lost. rm: nothing would be lost.
+remove_task() {
+  local mode=$1 dry=$2 t=$3 dir=$TASKS/$3 r f br why= shipped=false
+  load_task "$t"
+  for r in $(worktrees "$t"); do
+    git -C "$ROOT/$r" fetch --quiet origin 2>/dev/null || say "$r: fetch failed, using local refs"
+    repo_state "$t" "$r"
+    if $R_DIRTY; then why="$why; $r has uncommitted changes"; fi
+    if [ "$R_UNPUSHED" -gt 0 ]; then why="$why; $r has $R_UNPUSHED unpushed commit(s)"; fi
+    if [ "$mode" = done ]; then
+      case $R_STAGE in
+        prod) shipped=true;;
+        empty) ;;
+        *) why="$why; $r is not in prod ($R_STAGE)";;
+      esac
+    fi
+  done
+  if [ "$mode" = done ] && ! $shipped && [ -z "$why" ]; then why="; nothing reached prod"; fi
+  for f in "$dir"/* "$dir"/.[!.]*; do
+    [ -e "$f" ] || continue
+    f=$(basename "$f")
+    case $f in .task|TASK.md|AGENTS.md|CLAUDE.md|"$t.code-workspace") continue;; esac
+    [ -f "$dir/$f/.git" ] || why="$why; unknown file $f"
+  done
+  if [ -n "$why" ]; then say "$t: kept (${why#; })"; return 1; fi
+  if $dry; then echo "would remove $t"; return 0; fi
+
+  # set -e is off in here (we run under ||), so every step checks itself
+  if [ -f "$dir/TASK.md" ]; then
+    { mkdir -p "$TASKS/.archive" && cp "$dir/TASK.md" "$TASKS/.archive/$(date +%Y-%m-%d)-$t.md"; } ||
+      die "$t: could not archive TASK.md; nothing removed"
+  fi
+  for r in $(worktrees "$t"); do
+    br=$(git -C "$dir/$r" branch --show-current)
+    git -C "$ROOT/$r" worktree remove "$dir/$r" || die "$t: could not remove worktree $r; stopped here"
+    if [ -n "$br" ]; then git -C "$ROOT/$r" branch -D -q "$br" || say "$r: could not delete branch $br"; fi
+  done
+  rm -rf "${dir:?}"
+  echo "removed $t"
+}
+
+cmd_remove() {
+  local mode=$1 dry=false tasks=() t kept=0 named=true
+  shift
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --dry-run) dry=true;;
+      -*) die "unknown flag $1";;
+      *) tasks+=("$1");;
+    esac
+    shift
+  done
+  if [ ${#tasks[@]} -eq 0 ]; then
+    [ "$mode" = done ] || die "usage: izumo rm <task...> [--dry-run]"
+    named=false
+    tasks=($(all_tasks))
+  fi
+  for t in ${tasks[@]+"${tasks[@]}"}; do
+    remove_task "$mode" "$dry" "$t" || kept=1
+  done
+  if $named; then return $kept; fi
+}
+
+cmd=${1:-}
+case $cmd in
+  new|add|ls|done|rm) shift;;
+  --version) echo "izumo $VERSION"; exit;;
+  ''|-h|--help|help) usage; exit;;
+  *) usage >&2; exit 2;;
+esac
+
+ROOT=${IZUMO_ROOT:-$(find_root)}
+ROOT=$(cd "$ROOT" && pwd -P)
+[ -f "$ROOT/.izumo" ] || die "no .izumo in $ROOT"
+TASKS=$ROOT/tasks
+BASE= PROD= PREFIX=
+post_add() { :; }
+# .izumo is sourced as bash: trust it like a Makefile
+. "$ROOT/.izumo"
+
+case $cmd in
+  new) cmd_new "$@";;
+  add) cmd_add "$@";;
+  ls) cmd_ls "$@";;
+  done|rm) cmd_remove "$cmd" "$@";;
+esac

@@ -1,0 +1,2 @@
+# bash breaks on CRLF; keep LF even on Windows checkouts
+* text=auto eol=lf
