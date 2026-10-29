@@ -5,7 +5,9 @@ set -euo pipefail
 
 IZ="$(cd "$(dirname "$0")/.." && pwd)/bin/izumo"
 T=$(mktemp -d)
-trap 'rm -rf "$T"' EXIT
+# shellcheck disable=SC2046  # job pids
+trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$T"' EXIT
+exec </dev/null  # izumo asks before stopping servers only on a terminal
 
 export IZUMO_GH=none GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$T/gitconfig"
 printf '[user]\n name = t\n email = t@t\n[init]\n defaultBranch = main\n[commit]\n gpgsign = false\n' > "$T/gitconfig"
@@ -299,5 +301,38 @@ git -C "$T/dev/c" commit -q --allow-empty -m g && git -C "$T/dev/c" push -q orig
 says 'fetched (main has local changes)' pull c
 says 'up to date' pull a
 refuses 'no git clone' pull nope
+
+# servers: done, rm and drop stop the dev servers running from the task, once told to
+PY=
+for p in python3 python; do if "$p" -c '' 2>/dev/null; then PY=$p; break; fi; done
+[ -n "$PY" ] || fail "no python for the server test"
+serve() {  # serve <task> <repo>: a server running from that worktree, like pnpm dev; sets PORT
+  PORT=$((20000 + RANDOM % 20000))
+  (cd "tasks/$1/$2" && exec "$PY" -m http.server "$PORT" --bind 127.0.0.1 --directory "$PWD" >/dev/null 2>&1) &
+  for _ in 1 2 3 4 5 6 7 8 9 10; do "$IZ" ls "$1" 2>/dev/null | grep -q "serving:$PORT" && return; sleep 1; done
+  fail "server on $PORT not seen by ls"
+}
+up() { "$PY" -c "import socket; socket.create_connection(('127.0.0.1', $1), 2)" 2>/dev/null; }
+iz new served a b >/dev/null
+serve served a
+says "\"serving\": [$PORT]" ls served --json
+says ":$PORT in a (pid" rm served --dry-run
+refuses 'pass --stop to stop it, or --no-stop' rm served
+up "$PORT" || fail "a refusal stopped the server"
+iz drop b --task served >/dev/null || fail "drop of a repo serving nothing asked about servers"
+says "stopped" drop a --task served --stop
+up "$PORT" && fail "drop --stop left the server running"
+iz add a --task served >/dev/null
+serve served a
+case $(uname -s) in
+  MINGW*|MSYS*|CYGWIN*)  # Windows won't remove a folder a running server has open
+    refuses 'a program has the folder open' rm served --no-stop
+    iz rm served --stop >/dev/null 2>&1 || fail "rm --stop";;
+  *)
+    iz rm served --no-stop >/dev/null || fail "rm --no-stop"
+    up "$PORT" || fail "rm --no-stop stopped the server"
+    kill %% 2>/dev/null || true;;
+esac
+[ ! -e tasks/served ] || fail "served not removed"
 
 echo ok

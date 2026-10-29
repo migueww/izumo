@@ -63,13 +63,13 @@ izumo done --dry-run && izumo done            # remove what has shipped
 |---|---|
 | `new <task> [repo...] [--branch B] [--base BRANCH]` | Creates `tasks/<task>/` with a worktree per repo, `TASK.md`, `AGENTS.md`, `CLAUDE.md` and a VS Code workspace. Uses `B` if it already exists locally or on origin, else creates it from the base. `--base` can be another task's pushed branch, to stack on it; repos without it start from their default branch and say so. |
 | `add <repo...> [--task T]` | Adds repos to a task. |
-| `drop <repo...> [--task T]` | Takes repos out of a task: removes the worktree and the local branch. Refuses if work would be lost. |
+| `drop <repo...> [--task T] [--stop\|--no-stop]` | Takes repos out of a task: removes the worktree and the local branch. Refuses if work would be lost. |
 | `adopt <worktree...> [--task T]` | Moves worktrees you made by hand, or a repo from another task, into a task. Creates the task if needed, on the first worktree's branch. |
 | `mv <task> <new-name>` | Renames a task. Branches keep their names, since they may have PRs open. |
 | `base <branch> [--task T]` | Changes the branch a task is based on: repos added later start from it, and stages compare against it. Existing worktrees aren't rebased. |
-| `ls [task...] [--json] [--fetch]` | Stage per repo: `empty` (no commits yet), `wip`, `pr` (open, with review decision and CI: `approved`, `changes-requested`, `ci:failing`...), `base` (merged, not shipped), `prod`. Plus modified and untracked files, unpushed commits, what the task's agent is doing, and `[ready: izumo done]` when `done` would take the task. Reads the last fetch unless you pass `--fetch`. Plain `izumo` runs it. |
-| `done [task...] [--dry-run]` | Fetches, then removes tasks whose repos are all in `prod` or `empty` (at least one in `prod`). No args: sweeps all tasks. |
-| `rm <task...> [--dry-run] [--discard]` | Removes a task even if it never shipped: a review, an abandoned idea. `--discard` removes it even when that loses uncommitted changes, unpushed commits or unknown files; `--dry-run --discard` lists exactly what would be lost. |
+| `ls [task...] [--json] [--fetch]` | Stage per repo: `empty` (no commits yet), `wip`, `pr` (open, with review decision and CI: `approved`, `changes-requested`, `ci:failing`...), `base` (merged, not shipped), `prod`. Plus modified and untracked files, unpushed commits, the ports its dev servers listen on (`serving:3000`), what the task's agent is doing, and `[ready: izumo done]` when `done` would take the task. Reads the last fetch unless you pass `--fetch`. Plain `izumo` runs it. |
+| `done [task...] [--dry-run] [--stop\|--no-stop]` | Fetches, then removes tasks whose repos are all in `prod` or `empty` (at least one in `prod`). No args: sweeps all tasks. |
+| `rm <task...> [--dry-run] [--discard] [--stop\|--no-stop]` | Removes a task even if it never shipped: a review, an abandoned idea. `--discard` removes it even when that loses uncommitted changes, unpushed commits or unknown files; `--dry-run --discard` lists exactly what would be lost. |
 | `pull [repo...]` | Fetches the root's clones (pruning deleted branches) and fast-forwards the ones on a clean branch, so code you or an agent reads there is current. Clones with local commits or changes are only fetched, and it says why. |
 | `run [--task T] [--] <command...>` | Runs a command in each repo of the task, in order, with the hook variables set (`izumo run -- pnpm test`). Fails if it failed in any repo. |
 
@@ -80,6 +80,13 @@ deleted looks unpushed, and izumo keeps it. On Windows it also keeps a task whos
 a program has open (an editor, a terminal), since Windows would stop the removal halfway.
 If a removal stops halfway anyway, `ls` flags the task and running the same command
 again finishes it.
+
+A dev server left running from the task (`pnpm dev` on :3000) is no reason to keep it.
+`done`, `rm` and `drop` name the servers listening on a port from the worktrees they
+remove and ask before stopping them; `--stop` or `--no-stop` answers ahead, and without
+a terminal (an agent) one of them is required. On Windows izumo finds a server by its
+command line, which holds the worktree's path when it runs from `node_modules`; Linux
+and macOS also match its folder, through `lsof`.
 
 ## Configure
 
@@ -129,8 +136,8 @@ shows `waiting` until the turn ends.
 
 ## Not doing
 
-izumo doesn't run or orchestrate agents, clone your repos, open PRs, manage
-ports or rebase branches. Your other tools do that, and izumo stays small enough to read
+izumo doesn't run or orchestrate agents, clone your repos, open PRs, start servers,
+assign ports or rebase branches. Your other tools do that, and izumo stays small enough to read
 in one sitting.
 
 ## Why "izumo"

@@ -3,7 +3,7 @@
 # https://github.com/migueww/izumo (MIT)
 set -euo pipefail
 
-VERSION=0.8.0
+VERSION=0.9.0
 GH=${IZUMO_GH:-gh}
 
 say() { echo "izumo: $*" >&2; }
@@ -23,6 +23,7 @@ izumo: one folder per task, one git worktree per repo
   izumo ls [task...] [--json] [--fetch]
   izumo done [task...] [--dry-run]
   izumo rm <task...> [--dry-run] [--discard]   --discard: even losing changes and commits
+      done, rm and drop stop the task's dev servers after asking; --stop / --no-stop answer ahead
   izumo run [--task T] [--] <command...>   run a command in each repo of a task
   izumo pull [repo...]                     fetch the root's clones, fast-forward the clean ones
 
@@ -425,7 +426,7 @@ cmd_base() {
 }
 
 cmd_ls() {
-  local json=false fetch=false tasks=() t r n=0 tmp seen=' ' tsep= rsep= flags removing lines shipped ready
+  local json=false fetch=false tasks=() t r n=0 tmp seen=' ' tsep= rsep= flags removing lines shipped ready serving
   while [ $# -gt 0 ]; do
     case $1 in
       --json) json=true;;
@@ -454,6 +455,7 @@ cmd_ls() {
   tmp=$(mktemp -d)
   # shellcheck disable=SC2064  # expanded now on purpose: $tmp is local and gone by exit
   trap "rm -rf '$tmp'" EXIT
+  servers > "$tmp/.servers" &
   for t in ${tasks[@]+"${tasks[@]}"}; do
     mkdir -p "$tmp/$t"
     for r in $(worktrees "$t"); do
@@ -478,14 +480,15 @@ cmd_ls() {
       if [ -f "$tmp/$t/$r" ]; then
         IFS=$'\037' read -r R_BRANCH R_STAGE R_MODIFIED R_UNTRACKED R_UNPUSHED R_PR R_REVIEW R_CI < "$tmp/$t/$r"
       fi
+      serving=$(awk -F'\t' -v t="$t" -v r="$r" '$4 == t && $5 == r {printf "%s%s", s, $2; s = ","}' "$tmp/.servers")
       case $R_STAGE in prod) shipped=true;; empty) ;; *) ready=false;; esac
       if [ $((R_MODIFIED + R_UNTRACKED + R_UNPUSHED)) -gt 0 ]; then ready=false; fi
       if $json; then
         R_DIRTY=false
         if [ $((R_MODIFIED + R_UNTRACKED)) -gt 0 ]; then R_DIRTY=true; fi
-        lines="$lines$rsep$(printf '\n    { "repo": %s, "branch": %s, "stage": "%s", "dirty": %s, "modified": %s, "untracked": %s, "unpushed": %s, "pr": %s, "review": %s, "ci": %s }' \
+        lines="$lines$rsep$(printf '\n    { "repo": %s, "branch": %s, "stage": "%s", "dirty": %s, "modified": %s, "untracked": %s, "unpushed": %s, "pr": %s, "review": %s, "ci": %s, "serving": [%s] }' \
           "$(json_str "$r")" "$(json_str "$R_BRANCH")" "$R_STAGE" "$R_DIRTY" "$R_MODIFIED" "$R_UNTRACKED" \
-          "$R_UNPUSHED" "$(json_str "$R_PR")" "$(json_str "$R_REVIEW")" "$(json_str "$R_CI")")"
+          "$R_UNPUSHED" "$(json_str "$R_PR")" "$(json_str "$R_REVIEW")" "$(json_str "$R_CI")" "$serving")"
         rsep=,
       else
         flags=
@@ -494,6 +497,7 @@ cmd_ls() {
         if [ "$R_UNPUSHED" -gt 0 ]; then flags="$flags $R_UNPUSHED-unpushed"; fi
         if [ -n "$R_REVIEW" ]; then flags="$flags $R_REVIEW"; fi
         if [ -n "$R_CI" ]; then flags="$flags ci:$R_CI"; fi
+        if [ -n "$serving" ]; then flags="$flags serving:$serving"; fi
         lines="$lines$(printf '  %-32s %-36s %-6s%s %s' "$r" "$R_BRANCH" "$R_STAGE" "$flags" "$R_PR")"$'\n'
       fi
     done
@@ -522,15 +526,120 @@ in_removing() {
 
 IN_USE="a program has the folder open (VS Code, a terminal, a dev server?), close it"
 
+windows() { case $(uname -s) in MINGW*|MSYS*|CYGWIN*) return 0;; esac; return 1; }
+
 # Windows won't delete a folder a program has open, and git finds out halfway through; a rename
 # fails in the same cases, so try one while nothing is removed yet
 in_use() {
   local tmp
   tmp=$(dirname "$1")/.$(basename "$1").izumo-check
-  case $(uname -s) in MINGW*|MSYS*|CYGWIN*) ;; *) return 1;; esac
+  windows || return 1
   mv -T "$1" "$tmp" 2>/dev/null || return 0
   mv -T "$tmp" "$1" || die "could not rename $tmp back to $1"
   return 1
+}
+
+# procs <pid...>: pid TAB name TAB what places it: its command line, and outside Windows its folder first
+procs() {
+  local p f
+  if windows; then
+    f=$(printf 'ProcessId=%s OR ' "$@")
+    powershell.exe -NoProfile -NonInteractive -Command 'Get-CimInstance Win32_Process -Filter "'"${f% OR }"'" |
+      ForEach-Object { "{0}`t{1}`t{2}" -f $_.ProcessId, $_.Name, $_.CommandLine }' 2>/dev/null | tr -d '\r' | sed 's#\\#/#g'
+  else
+    for p; do
+      printf '%s\t%s\t%s/ %s\n' "$p" "$(ps -o comm= -p "$p" 2>/dev/null)" \
+        "$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" "$(ps -o args= -p "$p" 2>/dev/null)"
+    done
+  fi
+}
+
+# servers: processes listening on a TCP port that run from a task's repo, one per line:
+# pid TAB ports TAB name TAB task TAB repo
+# ponytail: on Windows only the command line places a process (dev servers run from node_modules
+# do); one started as `node server.js` from the folder isn't found, and in_use still keeps the task
+servers() {
+  local listen dir=$TASKS wts= d
+  for d in "$TASKS"/*/*/.git; do
+    if [ -f "$d" ]; then d=${d%/.git}; wts="$wts${d#"$TASKS"/}"$'\n'; fi
+  done
+  # listening = remote port 0; netstat's state column is translated, its numbers aren't
+  if windows; then
+    listen=$(netstat -ano 2>/dev/null | awk '$1 == "TCP" && $3 ~ /:0$/ && $5 > 4 {n = split($2, a, ":"); print $5, a[n]}')
+    dir=$(cygpath -m "$TASKS")
+  else
+    listen=$(lsof -nP -iTCP -sTCP:LISTEN -Fpn 2>/dev/null | awk '/^p/ {p = substr($0, 2)} /^n/ {n = split($0, a, ":"); print p, a[n]}')
+  fi
+  [ -n "$listen" ] || return 0
+  # shellcheck disable=SC2046  # pids are numbers
+  procs $(echo "$listen" | awk '{print $1}' | sort -u) | LISTEN=$listen WTS=$wts awk -F'\t' -v dir="$dir/" '
+    BEGIN {
+      dir = tolower(dir)
+      n = split(ENVIRON["WTS"], w, "\n")
+      for (i = 1; i <= n; i++) wts[tolower(w[i])] = 1
+      n = split(ENVIRON["LISTEN"], l, "\n")
+      for (i = 1; i <= n; i++) {
+        split(l[i], f, " ")
+        if (index(ports[f[1]] ",", "," f[2] ",") == 0) ports[f[1]] = ports[f[1]] "," f[2]
+      }
+    }
+    ($1 in ports) && (i = index(tolower($3), dir)) {
+      rest = substr($3, i + length(dir))
+      sub(/[ "].*/, "", rest)
+      # inside a worktree: a file in the task folder itself (its workspace, open in an editor) is no server
+      split(rest, p, "/")
+      if (!(tolower(p[1] "/" p[2]) in wts)) next
+      name = $2; sub(/.*\//, "", name); sub(/\.exe$/, "", name)
+      printf "%s\t%s\t%s\t%s\t%s\n", $1, substr(ports[$1], 2), name, p[1], p[2]
+    }'
+}
+
+alive() {
+  local p
+  for p; do if kill -0 "$p" 2>/dev/null; then return 0; fi; done
+  return 1
+}
+
+stop_pids() {
+  local p n=0
+  if windows; then
+    # /T takes the server's children along (esbuild and such)
+    for p; do taskkill //F //T //PID "$p" >/dev/null 2>&1 || true; done
+    return
+  fi
+  kill "$@" 2>/dev/null || true
+  while alive "$@" && [ $n -lt 10 ]; do sleep 0.5; n=$((n + 1)); done
+  if alive "$@"; then kill -9 "$@" 2>/dev/null || true; fi
+}
+
+# free <dry> <label> <task> [repo]: stops the servers running from the task (or that repo of it)
+# once the user agrees (--stop, --no-stop, or asked on a terminal), then checks nothing else has
+# the folder open. Sets WHY when it can't go, STOPPING with what a dry run would stop.
+free() {
+  local dry=$1 label=$2 t=$3 r=${4:-} dir=$TASKS/$3${4:+/$4} srv= list a n=0
+  WHY= STOPPING=
+  if [ "$STOP" != no ]; then
+    srv=$(servers | awk -F'\t' -v t="$t" -v r="$r" '$4 == t && (r == "" || $5 == r)')
+  fi
+  if [ -n "$srv" ]; then
+    list=$(awk -F'\t' '{gsub(",", " :", $2); printf "%s%s on :%s in %s (pid %s)", (NR > 1 ? ", " : ""), $3, $2, $5, $1}' <<<"$srv")
+    # the servers hold the folder open, so whether it is free shows only once they are gone
+    if $dry; then STOPPING=$list; return 0; fi
+    if [ "$STOP" != yes ]; then
+      [ -t 0 ] || { WHY="serving: $list; pass --stop to stop it, or --no-stop to leave it running"; return 1; }
+      printf 'izumo: %s: stop %s? [Y/n] ' "$label" "$list" >&2
+      read -r a || a=n
+      case $a in [nN]*) srv=;; esac
+    fi
+  fi
+  if [ -n "$srv" ]; then
+    # shellcheck disable=SC2046  # pids are numbers
+    stop_pids $(cut -f1 <<<"$srv")
+    say "$label: stopped $list"
+    # the shells that started them exit right after and let go of the folder
+    while in_use "$dir" && [ $n -lt 5 ]; do sleep 1; n=$((n + 1)); done
+  fi
+  if in_use "$dir"; then WHY=$IN_USE; return 1; fi
 }
 
 # drop: takes repos out of a task when nothing would be lost; the task stays
@@ -539,12 +648,14 @@ cmd_drop() {
   while [ $# -gt 0 ]; do
     case $1 in
       --task) task=${2:?--task needs a value}; shift 2; continue;;
+      --stop) STOP=yes;;
+      --no-stop) STOP=no;;
       -*) die "unknown flag $1";;
       *) repos+=("$1");;
     esac
     shift
   done
-  [ ${#repos[@]} -gt 0 ] || die "usage: izumo drop <repo...> [--task T]"
+  [ ${#repos[@]} -gt 0 ] || die "usage: izumo drop <repo...> [--task T] [--stop|--no-stop]"
   [ -n "$task" ] || task=$(cwd_task) || die "not inside a task folder; pass --task"
   load_task "$task"
   for r in "${repos[@]}"; do
@@ -556,7 +667,7 @@ cmd_drop() {
     repo_state "$task" "$r"
     if $R_DIRTY; then die "$r: kept (uncommitted changes: $R_MODIFIED modified, $R_UNTRACKED untracked)"; fi
     if [ "$R_UNPUSHED" -gt 0 ]; then die "$r: kept ($R_UNPUSHED unpushed commit(s))"; fi
-    if in_use "$wt"; then die "$r: kept ($IN_USE)"; fi
+    free false "$r" "$task" "$r" || die "$r: kept ($WHY)"
     pre_remove_ok "$task" "$r" false || exit 1
     git -c core.longpaths=true -C "$ROOT/$r" worktree remove "$wt" ||
       die "$r: could not remove the worktree (a program has it open?)"
@@ -600,10 +711,11 @@ remove_task() {
   done
   if ! $discard; then why="$lost$why" lost=; fi
   if [ "$mode" = done ] && ! $shipped && [ -z "$why" ]; then why="; nothing reached prod"; fi
-  if [ -z "$why" ] && in_use "$dir"; then why="; $IN_USE"; fi
+  if [ -z "$why" ] && ! free "$dry" "$t" "$t"; then why="; $WHY"; fi
   if [ -n "$why" ]; then say "$t: kept (${why#; })"; return 1; fi
   if $dry; then
     if [ -n "$lost" ]; then echo "would remove $t, discarding: ${lost#; }"; else echo "would remove $t"; fi
+    if [ -n "$STOPPING" ]; then echo "  and stop $STOPPING"; fi
     return 0
   fi
   if [ -n "$lost" ]; then say "$t: discarding ${lost#; }"; force=--force; fi
@@ -708,6 +820,8 @@ cmd_remove() {
     case $1 in
       --dry-run) dry=true;;
       --discard) [ "$mode" = rm ] || die "--discard only goes with rm: done is for work that shipped"; discard=true;;
+      --stop) STOP=yes;;
+      --no-stop) STOP=no;;
       -*) die "unknown flag $1";;
       *) tasks+=("$1");;
     esac
@@ -747,7 +861,7 @@ ROOT=${IZUMO_ROOT:-$(find_root)}
 ROOT=$(cd "$ROOT" && pwd -P)
 [ -f "$ROOT/.izumo" ] || die "no .izumo in $ROOT"
 TASKS=$ROOT/tasks
-BASE= PROD= PREFIX= TASK_TEMPLATE=
+BASE= PROD= PREFIX= TASK_TEMPLATE= STOP=
 post_add() { :; }
 pre_remove() { :; }
 # .izumo is sourced as bash: trust it like a Makefile
