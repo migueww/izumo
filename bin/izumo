@@ -545,7 +545,7 @@ procs() {
   if windows; then
     f=$(printf 'ProcessId=%s OR ' "$@")
     powershell.exe -NoProfile -NonInteractive -Command 'Get-CimInstance Win32_Process -Filter "'"${f% OR }"'" |
-      ForEach-Object { "{0}`t{1}`t{2}" -f $_.ProcessId, $_.Name, $_.CommandLine }' 2>/dev/null | tr -d '\r' | sed 's#\\#/#g'
+      ForEach-Object { "{0}`t{1}`t{2}" -f $_.ProcessId, $_.Name, ($_.CommandLine -replace "[\r\n\t]+", " ") }' 2>/dev/null | tr -d '\r' | sed 's#\\#/#g'
   else
     for p; do
       printf '%s\t%s\t%s/ %s\n' "$p" "$(ps -o comm= -p "$p" 2>/dev/null)" \
