@@ -3,7 +3,7 @@
 # https://github.com/migueww/izumo (MIT)
 set -euo pipefail
 
-VERSION=0.3.1
+VERSION=0.4.0
 GH=${IZUMO_GH:-gh}
 
 say() { echo "izumo: $*" >&2; }
@@ -16,6 +16,7 @@ izumo: one folder per task, one git worktree per repo
   izumo                                    same as izumo ls
   izumo new <task> [repo...] [--branch B] [--base BRANCH]
   izumo add <repo...> [--task T]
+  izumo drop <repo...> [--task T]         take repos out of a task, keeping the task
   izumo adopt <worktree...> [--task T]     move existing worktrees into a task
   izumo ls [task...] [--json] [--fetch]
   izumo done [task...] [--dry-run]
@@ -139,7 +140,8 @@ This folder is an izumo task: each subfolder is a git worktree of one repo, all 
 the task's branch. Read TASK.md first and keep it current. It holds only what git
 can't tell: goal, status / next step, decisions and open items. Repos, branches and
 PR state come from `izumo ls <task>`, so never write them here: the next step is the
-next thing a person does. Need another repo? Run `izumo add <repo>` from here.
+next thing a person does. Need another repo? Run `izumo add <repo>` from here;
+one no longer needed? `izumo drop <repo>`.
 EOF
   printf '@AGENTS.md\n@TASK.md\n' > "$dir/CLAUDE.md"
 }
@@ -412,6 +414,53 @@ in_removing() {
   awk -v r="$2" '$1 == r {found = 1} END {exit !found}' "$TASKS/$1/.removing"
 }
 
+IN_USE="a program has the folder open (VS Code, a terminal, a dev server?), close it"
+
+# Windows won't delete a folder a program has open, and git finds out halfway through; a rename
+# fails in the same cases, so try one while nothing is removed yet
+in_use() {
+  local tmp
+  tmp=$(dirname "$1")/.$(basename "$1").izumo-check
+  case $(uname -s) in MINGW*|MSYS*|CYGWIN*) ;; *) return 1;; esac
+  mv -T "$1" "$tmp" 2>/dev/null || return 0
+  mv -T "$tmp" "$1" || die "could not rename $tmp back to $1"
+  return 1
+}
+
+# drop: takes repos out of a task when nothing would be lost; the task stays
+cmd_drop() {
+  local task= repos=() r wt
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --task) task=${2:?--task needs a value}; shift 2; continue;;
+      -*) die "unknown flag $1";;
+      *) repos+=("$1");;
+    esac
+    shift
+  done
+  [ ${#repos[@]} -gt 0 ] || die "usage: izumo drop <repo...> [--task T]"
+  [ -n "$task" ] || task=$(cwd_task) || die "not inside a task folder; pass --task"
+  load_task "$task"
+  for r in "${repos[@]}"; do
+    valid_name "$r"
+    wt=$TASKS/$task/$r
+    [ -f "$wt/.git" ] || die "$r is not in task '$task'"
+    case "$(pwd -P)/" in "$wt"/*) die "$r: you are inside it, cd out first";; esac
+    git -C "$ROOT/$r" fetch --quiet origin 2>/dev/null || say "$r: fetch failed, using local refs"
+    repo_state "$task" "$r"
+    if $R_DIRTY; then die "$r: kept (uncommitted changes: $R_MODIFIED modified, $R_UNTRACKED untracked)"; fi
+    if [ "$R_UNPUSHED" -gt 0 ]; then die "$r: kept ($R_UNPUSHED unpushed commit(s))"; fi
+    if in_use "$wt"; then die "$r: kept ($IN_USE)"; fi
+    git -c core.longpaths=true -C "$ROOT/$r" worktree remove "$wt" ||
+      die "$r: could not remove the worktree (a program has it open?)"
+    git -C "$ROOT/$r" worktree prune
+    # every commit is on a remote or in a merged PR, so the local branch holds nothing of its own
+    if [ -n "$R_BRANCH" ]; then git -C "$ROOT/$r" branch -D -q "$R_BRANCH" || say "$r: could not delete branch $R_BRANCH"; fi
+    write_workspace "$task"
+    echo "dropped $r from $task"
+  done
+}
+
 # done: every repo in prod (or untouched) and nothing would be lost. rm: nothing would be lost.
 remove_task() {
   local mode=$1 dry=$2 t=$3 dir=$TASKS/$3 r f br why= shipped=false resuming=false
@@ -442,17 +491,7 @@ remove_task() {
     if $resuming && in_removing "$t" "$f"; then continue; fi
     why="$why; unknown file $f"
   done
-  # Windows won't delete a folder a program has open, and git finds out halfway through; a rename
-  # fails in the same cases, so try one while nothing is removed yet
-  case $(uname -s) in MINGW*|MSYS*|CYGWIN*)
-    if [ -z "$why" ]; then
-      if mv -T "$dir" "$TASKS/.$t.check" 2>/dev/null; then
-        mv -T "$TASKS/.$t.check" "$dir" || die "$t: could not rename $TASKS/.$t.check back to $dir"
-      else
-        why="; a program has the folder open (VS Code, a terminal, a dev server?), close it"
-      fi
-    fi;;
-  esac
+  if [ -z "$why" ] && in_use "$dir"; then why="; $IN_USE"; fi
   if [ -n "$why" ]; then say "$t: kept (${why#; })"; return 1; fi
   if $dry; then echo "would remove $t"; return 0; fi
 
@@ -508,7 +547,7 @@ cmd_remove() {
 
 cmd=${1:-}
 case $cmd in
-  new|add|adopt|ls|done|rm) shift;;
+  new|add|drop|adopt|ls|done|rm) shift;;
   _agent) shift; agent_hook "$@"; exit 0;;
   '')
     if [ -z "${IZUMO_ROOT:-}" ] && ! (find_root) >/dev/null 2>&1; then usage; exit; fi
@@ -531,6 +570,7 @@ case $TASK_TEMPLATE in ''|/*|[A-Za-z]:*) ;; *) TASK_TEMPLATE=$ROOT/$TASK_TEMPLAT
 case $cmd in
   new) cmd_new "$@";;
   add) cmd_add "$@";;
+  drop) cmd_drop "$@";;
   adopt) cmd_adopt "$@";;
   ls) cmd_ls "$@";;
   done|rm) cmd_remove "$cmd" "$@";;

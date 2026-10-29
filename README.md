@@ -63,12 +63,13 @@ izumo done --dry-run && izumo done            # remove what has shipped
 |---|---|
 | `new <task> [repo...] [--branch B] [--base BRANCH]` | Creates `tasks/<task>/` with a worktree per repo, `TASK.md`, `AGENTS.md`, `CLAUDE.md` and a VS Code workspace. Uses `B` if it already exists locally or on origin, else creates it from the base. |
 | `add <repo...> [--task T]` | Adds repos to a task. |
+| `drop <repo...> [--task T]` | Takes repos out of a task: removes the worktree and the local branch. Refuses if work would be lost. |
 | `adopt <worktree...> [--task T]` | Moves worktrees you made by hand into a task. Creates the task if needed, on the first worktree's branch. |
 | `ls [task...] [--json] [--fetch]` | Stage per repo: `empty` (no commits yet), `wip`, `pr` (open, with review decision and CI: `approved`, `changes-requested`, `ci:failing`...), `base` (merged, not shipped), `prod`. Plus modified and untracked files, unpushed commits, what the task's agent is doing, and `[ready: izumo done]` when `done` would take the task. Reads the last fetch unless you pass `--fetch`. Plain `izumo` runs it. |
 | `done [task...] [--dry-run]` | Fetches, then removes tasks whose repos are all in `prod` or `empty` (at least one in `prod`). No args: sweeps all tasks. |
 | `rm <task...> [--dry-run]` | Removes a task even if it never shipped: a review, an abandoned idea. |
 
-Neither `done` nor `rm` removes a task that has uncommitted changes, unpushed commits or
+Neither `done`, `rm` nor `drop` removes anything that has uncommitted changes, unpushed commits or
 files it didn't create. "Unpushed" means the commit is on no remote branch and is not
 the head of a merged PR. Without `gh`, squash-merged work whose remote branch was
 deleted looks unpushed, and izumo keeps it. On Windows it also keeps a task whose folder

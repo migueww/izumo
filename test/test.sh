@@ -134,6 +134,22 @@ case $(uname -s) in MINGW*|MSYS*|CYGWIN*)
   iz rm busy >/dev/null || fail "rm busy";;
 esac
 
+# drop: a repo leaves the task when nothing would be lost; the task stays
+iz new shrink a b >/dev/null
+echo z > tasks/shrink/b/z
+refuses 'b: kept (uncommitted changes: 0 modified, 1 untracked)' drop b --task shrink
+rm tasks/shrink/b/z
+git -C tasks/shrink/a commit -q --allow-empty -m z
+refuses 'a: kept (1 unpushed commit(s))' drop a --task shrink
+git -C tasks/shrink/a push -q origin shrink
+(cd tasks/shrink/b && refuses 'you are inside it' drop b)
+(cd tasks/shrink && iz drop b >/dev/null) || fail "drop b"
+[ ! -e tasks/shrink/b ] && [ -f tasks/shrink/a/.git ] || fail "drop removed the wrong thing"
+git -C b show-ref --quiet refs/heads/shrink && fail "drop left the branch"
+grep -q '"path": "b"' tasks/shrink/shrink.code-workspace && fail "workspace still lists b"
+refuses 'b is not in task' drop b --task shrink
+iz rm shrink >/dev/null || fail "rm shrink"
+
 # mixed root: a repo without BASE starts from its default branch
 iz new mixed c >/dev/null
 [ "$(git -C tasks/mixed/c rev-parse HEAD)" = "$(git -C c rev-parse origin/main)" ] || fail "fallback to default branch"
