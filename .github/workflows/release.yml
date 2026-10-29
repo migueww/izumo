@@ -1,0 +1,29 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build
+        run: |
+          v=${GITHUB_REF_NAME#v}
+          [ "$(sed -n 's/^VERSION=//p' bin/izumo)" = "$v" ] || { echo "bin/izumo says VERSION=$(sed -n 's/^VERSION=//p' bin/izumo), tag is $v"; exit 1; }
+          mkdir dist
+          for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            os=${t%/*} arch=${t#*/} ext=
+            if [ "$os" = windows ]; then ext=.exe; fi
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.version=$v" \
+              -o "dist/izumo_${os}_$arch$ext" ./cmd/izumo
+          done
+          (cd dist && sha256sum * > checksums.txt)
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

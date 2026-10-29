@@ -3,7 +3,7 @@
 # shellcheck disable=SC2015,SC2155  # `a && b || fail` and export x=$(...) are fine in a test
 set -euo pipefail
 
-IZ="$(cd "$(dirname "$0")/.." && pwd)/bin/izumo"
+IZ=${IZUMO_BIN:-"$(cd "$(dirname "$0")/.." && pwd)/bin/izumo"}  # IZUMO_BIN: a binary built from this checkout
 T=$(mktemp -d)
 # bash 3.2 exits with the trap's last status, so hand the test's own back
 cleanup() {

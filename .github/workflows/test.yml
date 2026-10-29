@@ -9,8 +9,30 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - run: bash test/test.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./... && go test ./...
         shell: bash
+      - run: go build -o "$RUNNER_TEMP/izumo$(go env GOEXE)" ./cmd/izumo
+        shell: bash
+      - run: IZUMO_BIN="$RUNNER_TEMP/izumo$(go env GOEXE)" bash test/test.sh
+        shell: bash
+      # the shim downloads, checks and runs a release; here the release is a local folder
+      - name: shim
+        shell: bash
+        run: |
+          v=$(sed -n 's/^VERSION=//p' bin/izumo)
+          name=izumo_$(go env GOOS)_$(go env GOARCH)$(go env GOEXE)
+          mkdir -p "$RUNNER_TEMP/rel/v$v"
+          cp "$RUNNER_TEMP/izumo$(go env GOEXE)" "$RUNNER_TEMP/rel/v$v/$name"
+          (cd "$RUNNER_TEMP/rel/v$v" && sha256sum "$name" > checksums.txt 2>/dev/null || shasum -a 256 "$name" > checksums.txt)
+          rel=$(cd "$RUNNER_TEMP/rel" && { pwd -W 2>/dev/null || pwd; })  # C:/... on Windows
+          export IZUMO_RELEASES="file:///${rel#/}" IZUMO_CACHE="$RUNNER_TEMP/cache"
+          bin/izumo _agent working && [ ! -e "$IZUMO_CACHE" ]  # hooks never download
+          bin/izumo --version | grep -q izumo
+          echo tampered >> "$RUNNER_TEMP/rel/v$v/$name" && rm -rf "$IZUMO_CACHE"
+          ! bin/izumo --version 2>/dev/null
   shellcheck:
     runs-on: ubuntu-latest
     steps:
