@@ -272,4 +272,18 @@ echo 'pre_remove() { :; }' >> .izumo
 rm tasks/messy/a/left-behind
 iz rm messy >/dev/null || fail "rm messy"
 
+# pull: clones fast-forward; untracked files don't block, local commits and changes do
+echo 1 > "$T/dev/c/f" && git -C "$T/dev/c" add f && git -C "$T/dev/c" commit -qm f && git -C "$T/dev/c" push -q origin main
+touch a/.env
+git -C b commit -q --allow-empty -m local
+out=$("$IZ" pull) || fail "pull: $out"
+grep -q '^a  *updated main' <<<"$out" && grep -q '^b  *fetched (main is ahead of origin/main)' <<<"$out" &&
+  grep -q '^c  *updated main' <<<"$out" && ! grep -q '^tasks' <<<"$out" || fail "pull output: $out"
+[ "$(cat c/f)" = 1 ] || fail "pull did not update c's files"
+echo 2 > c/f
+git -C "$T/dev/c" commit -q --allow-empty -m g && git -C "$T/dev/c" push -q origin main
+says 'fetched (main has local changes)' pull c
+says 'up to date' pull a
+refuses 'no git clone' pull nope
+
 echo ok

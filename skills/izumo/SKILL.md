@@ -11,6 +11,9 @@ must be on PATH; if it is missing, point the user to https://github.com/migueww/
 ## Rules
 
 - **Never edit the source clones** at the root. All work happens in `tasks/<task>/<repo>`.
+  Before reading code in a root clone (another service's contract, a grep across repos),
+  run `izumo pull <repo>` so you don't read stale code; if it says the clone is on some
+  other branch, tell the user what you read may not be the base branch.
 - **Starting work:** `izumo new <task> <repos...>`, with `--branch` when the user or the
   team convention names the branch. Write the user's request into the first section of
   `TASK.md` (the goal; the root's template may name its sections in another language)

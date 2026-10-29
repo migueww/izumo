@@ -3,7 +3,7 @@
 # https://github.com/migueww/izumo (MIT)
 set -euo pipefail
 
-VERSION=0.6.0
+VERSION=0.7.0
 GH=${IZUMO_GH:-gh}
 
 say() { echo "izumo: $*" >&2; }
@@ -24,6 +24,7 @@ izumo: one folder per task, one git worktree per repo
   izumo done [task...] [--dry-run]
   izumo rm <task...> [--dry-run]
   izumo run [--task T] [--] <command...>   run a command in each repo of a task
+  izumo pull [repo...]                     fetch the root's clones, fast-forward the clean ones
 
 Run it anywhere under your multi-repo root, the folder holding a .izumo file.
 EOF
@@ -127,6 +128,16 @@ all_tasks() {
   local d
   for d in "$TASKS"/*/; do
     if [ -f "$d.task" ]; then basename "$d"; fi
+  done
+}
+
+# the root's clones: folders with a .git directory and a name izumo accepts
+all_clones() {
+  local d
+  for d in "$ROOT"/*/; do
+    d=${d%/}
+    case ${d##*/} in .*|*[!A-Za-z0-9._-]*) continue;; esac
+    if [ -d "$d/.git" ]; then basename "$d"; fi
   done
 }
 
@@ -639,6 +650,50 @@ cmd_run() {
   [ -z "$failed" ] || die "failed in:$failed"
 }
 
+# pull_one <repo>: fetch, then fast-forward the clone's branch when nothing local is in the way.
+# Untracked files (.env and such) don't count: a fast-forward never touches them.
+pull_one() {
+  local src=$ROOT/$1 br up
+  git -C "$src" fetch --quiet --prune origin 2>/dev/null || { echo "fetch failed"; return; }
+  br=$(git -C "$src" branch --show-current)
+  [ -n "$br" ] || { echo "fetched (no branch checked out)"; return; }
+  up=$(git -C "$src" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) ||
+    { echo "fetched (on $br, which has no upstream)"; return; }
+  if [ "$(git -C "$src" rev-parse HEAD)" = "$(git -C "$src" rev-parse "$up")" ]; then echo "up to date"; return; fi
+  if is_ancestor "$src" "$up" HEAD; then echo "fetched ($br is ahead of $up)"; return; fi
+  if ! is_ancestor "$src" HEAD "$up"; then echo "fetched ($br has diverged from $up)"; return; fi
+  [ -z "$(git -C "$src" status --porcelain --untracked-files=no)" ] || { echo "fetched ($br has local changes)"; return; }
+  if git -C "$src" merge --ff-only --quiet "$up" >/dev/null 2>&1; then echo "updated $br"; else echo "fetched (could not fast-forward $br)"; fi
+}
+
+# pull: brings the root's clones up to date, so code read there is current
+cmd_pull() {
+  local repos=("$@") r tmp n=0 w=0 failed=false
+  for r in ${repos[@]+"${repos[@]}"}; do
+    valid_name "$r"
+    [ -d "$ROOT/$r/.git" ] || die "$r: no git clone at $ROOT/$r"
+  done
+  # shellcheck disable=SC2207  # clone names are validated: no spaces, no globs
+  [ ${#repos[@]} -gt 0 ] || repos=($(all_clones))
+  tmp=$(mktemp -d)
+  # shellcheck disable=SC2064  # expanded now on purpose: $tmp is local and gone by exit
+  trap "rm -rf '$tmp'" EXIT
+  for r in ${repos[@]+"${repos[@]}"}; do
+    pull_one "$r" > "$tmp/$r" &
+    n=$((n + 1))
+    if [ $((n % 8)) -eq 0 ]; then wait; fi
+  done
+  wait
+  for r in ${repos[@]+"${repos[@]}"}; do
+    if [ ${#r} -gt "$w" ]; then w=${#r}; fi
+  done
+  for r in ${repos[@]+"${repos[@]}"}; do
+    printf '%-*s  %s\n' "$w" "$r" "$(cat "$tmp/$r")"
+    if [ "$(cat "$tmp/$r")" = "fetch failed" ]; then failed=true; fi
+  done
+  if $failed; then return 1; fi
+}
+
 cmd_remove() {
   local mode=$1 dry=false tasks=() t kept=0 named=true
   shift
@@ -664,7 +719,7 @@ cmd_remove() {
 
 cmd=${1:-}
 case $cmd in
-  new|add|drop|adopt|mv|base|ls|done|rm|run) shift;;
+  new|add|drop|adopt|mv|base|ls|done|rm|run|pull) shift;;
   _agent) shift; agent_hook "$@"; exit 0;;
   '')
     if [ -z "${IZUMO_ROOT:-}" ] && ! (find_root) >/dev/null 2>&1; then usage; exit; fi
@@ -701,4 +756,5 @@ case $cmd in
   ls) cmd_ls "$@";;
   done|rm) cmd_remove "$cmd" "$@";;
   run) cmd_run "$@";;
+  pull) cmd_pull "$@";;
 esac
