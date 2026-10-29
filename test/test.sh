@@ -16,13 +16,13 @@ says() {  # says <expected text> <izumo args...>; captured, since grep -q in a p
   local msg=$1 out
   shift
   out=$("$IZ" "$@" 2>&1) || fail "izumo $*: exited $?: $out"
-  grep -qF "$msg" <<<"$out" || fail "izumo $*: expected '$msg', got: $out"
+  grep -qF -- "$msg" <<<"$out" || fail "izumo $*: expected '$msg', got: $out"
 }
 refuses() {  # refuses <expected message> <izumo args...>
   local msg=$1 out
   shift
   if out=$("$IZ" "$@" 2>&1); then fail "expected refusal: izumo $*"; fi
-  grep -qF "$msg" <<<"$out" || fail "izumo $*: expected '$msg', got: $out"
+  grep -qF -- "$msg" <<<"$out" || fail "izumo $*: expected '$msg', got: $out"
 }
 dev() { git -C "$T/dev/a" "$@"; }
 promote() { dev checkout -q main && dev merge -q --no-ff hml -m promote && dev push -q origin main; }
@@ -271,6 +271,20 @@ refuses 'pre_remove left changes in a' rm messy
 echo 'pre_remove() { :; }' >> .izumo
 rm tasks/messy/a/left-behind
 iz rm messy >/dev/null || fail "rm messy"
+
+# rm --discard: work given up on goes anyway, after saying what is lost; done never discards
+iz new abandoned a b >/dev/null
+echo x > tasks/abandoned/a/scratch
+git -C tasks/abandoned/b commit -q --allow-empty -m wip
+touch tasks/abandoned/notes.txt
+refuses 'a has uncommitted changes' rm abandoned
+says 'would remove abandoned, discarding: a has uncommitted changes (0 modified, 1 untracked); b has 1 unpushed commit(s); unknown file notes.txt' \
+  rm abandoned --dry-run --discard
+[ -f tasks/abandoned/a/scratch ] || fail "discard dry-run removed"
+refuses '--discard only goes with rm' done abandoned --discard
+iz rm abandoned --discard >/dev/null 2>&1 || fail "rm --discard"
+[ ! -e tasks/abandoned ] || fail "discard left the folder"
+git -C b show-ref --quiet refs/heads/abandoned && fail "discard left the branch"
 
 # pull: clones fast-forward; untracked files don't block, local commits and changes do
 echo 1 > "$T/dev/c/f" && git -C "$T/dev/c" add f && git -C "$T/dev/c" commit -qm f && git -C "$T/dev/c" push -q origin main

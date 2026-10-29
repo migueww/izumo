@@ -3,7 +3,7 @@
 # https://github.com/migueww/izumo (MIT)
 set -euo pipefail
 
-VERSION=0.7.0
+VERSION=0.8.0
 GH=${IZUMO_GH:-gh}
 
 say() { echo "izumo: $*" >&2; }
@@ -22,7 +22,7 @@ izumo: one folder per task, one git worktree per repo
   izumo base <branch> [--task T]           change the branch a task is based on
   izumo ls [task...] [--json] [--fetch]
   izumo done [task...] [--dry-run]
-  izumo rm <task...> [--dry-run]
+  izumo rm <task...> [--dry-run] [--discard]   --discard: even losing changes and commits
   izumo run [--task T] [--] <command...>   run a command in each repo of a task
   izumo pull [repo...]                     fetch the root's clones, fast-forward the clean ones
 
@@ -199,10 +199,11 @@ in_wt() {
   ( cd "$wt" && BRANCH=$(git branch --show-current) && export TASK=$t REPO=$r SRC=$ROOT/$r WT=$wt BRANCH && "$@" )
 }
 
-# pre_remove_ok <task> <repo>: runs the pre_remove hook; it must succeed and leave the worktree clean
+# pre_remove_ok <task> <repo> <discard>: runs the pre_remove hook; it must succeed and, unless
+# discarding, leave the worktree clean
 pre_remove_ok() {
   if ! in_wt "$1" "$2" pre_remove; then say "$1: kept (pre_remove failed in $2)"; return 1; fi
-  if [ -n "$(git -C "$TASKS/$1/$2" status --porcelain)" ]; then say "$1: kept (pre_remove left changes in $2)"; return 1; fi
+  if ! $3 && [ -n "$(git -C "$TASKS/$1/$2" status --porcelain)" ]; then say "$1: kept (pre_remove left changes in $2)"; return 1; fi
 }
 
 add_repos() {
@@ -556,7 +557,7 @@ cmd_drop() {
     if $R_DIRTY; then die "$r: kept (uncommitted changes: $R_MODIFIED modified, $R_UNTRACKED untracked)"; fi
     if [ "$R_UNPUSHED" -gt 0 ]; then die "$r: kept ($R_UNPUSHED unpushed commit(s))"; fi
     if in_use "$wt"; then die "$r: kept ($IN_USE)"; fi
-    pre_remove_ok "$task" "$r" || exit 1
+    pre_remove_ok "$task" "$r" false || exit 1
     git -c core.longpaths=true -C "$ROOT/$r" worktree remove "$wt" ||
       die "$r: could not remove the worktree (a program has it open?)"
     git -C "$ROOT/$r" worktree prune
@@ -568,16 +569,17 @@ cmd_drop() {
 }
 
 # done: every repo in prod (or untouched) and nothing would be lost. rm: nothing would be lost.
+# rm --discard: work that would be lost goes to $lost instead of blocking
 remove_task() {
-  local mode=$1 dry=$2 t=$3 dir=$TASKS/$3 r f br why= shipped=false resuming=false
+  local mode=$1 dry=$2 t=$3 discard=$4 dir=$TASKS/$3 r f br why= lost= shipped=false resuming=false force=
   load_task "$t"
   # an earlier removal stopped halfway: its checks passed back then, so finish what it listed
   if [ -f "$dir/.removing" ]; then resuming=true mode=rm; fi
   for r in $(worktrees "$t"); do
     git -C "$ROOT/$r" fetch --quiet origin 2>/dev/null || say "$r: fetch failed, using local refs"
     repo_state "$t" "$r"
-    if $R_DIRTY; then why="$why; $r has uncommitted changes ($R_MODIFIED modified, $R_UNTRACKED untracked)"; fi
-    if [ "$R_UNPUSHED" -gt 0 ]; then why="$why; $r has $R_UNPUSHED unpushed commit(s)"; fi
+    if $R_DIRTY; then lost="$lost; $r has uncommitted changes ($R_MODIFIED modified, $R_UNTRACKED untracked)"; fi
+    if [ "$R_UNPUSHED" -gt 0 ]; then lost="$lost; $r has $R_UNPUSHED unpushed commit(s)"; fi
     if [ "$mode" = done ]; then
       case $R_STAGE in
         prod) shipped=true;;
@@ -586,7 +588,6 @@ remove_task() {
       esac
     fi
   done
-  if [ "$mode" = done ] && ! $shipped && [ -z "$why" ]; then why="; nothing reached prod"; fi
   # Windows locks a shell's cwd, so removal would stop halfway; elsewhere the shell is left in a deleted dir
   case "$(pwd -P)/" in "$dir"/*) why="$why; you are inside it, cd out first";; esac
   for f in "$dir"/* "$dir"/.[!.]*; do
@@ -595,15 +596,21 @@ remove_task() {
     case $f in .task|.agent|.removing|TASK.md|AGENTS.md|CLAUDE.md|"$t.code-workspace") continue;; esac
     [ -f "$dir/$f/.git" ] && continue
     if $resuming && in_removing "$t" "$f"; then continue; fi
-    why="$why; unknown file $f"
+    lost="$lost; unknown file $f"
   done
+  if ! $discard; then why="$lost$why" lost=; fi
+  if [ "$mode" = done ] && ! $shipped && [ -z "$why" ]; then why="; nothing reached prod"; fi
   if [ -z "$why" ] && in_use "$dir"; then why="; $IN_USE"; fi
   if [ -n "$why" ]; then say "$t: kept (${why#; })"; return 1; fi
-  if $dry; then echo "would remove $t"; return 0; fi
+  if $dry; then
+    if [ -n "$lost" ]; then echo "would remove $t, discarding: ${lost#; }"; else echo "would remove $t"; fi
+    return 0
+  fi
+  if [ -n "$lost" ]; then say "$t: discarding ${lost#; }"; force=--force; fi
 
   # set -e is off in here (we run under ||), so every step checks itself
   if ! $resuming; then
-    for r in $(worktrees "$t"); do pre_remove_ok "$t" "$r" || return 1; done
+    for r in $(worktrees "$t"); do pre_remove_ok "$t" "$r" "$discard" || return 1; done
     if [ -f "$dir/TASK.md" ]; then
       { mkdir -p "$TASKS/.archive" && cp "$dir/TASK.md" "$TASKS/.archive/$(date +%Y-%m-%d)-$t.md"; } ||
         die "$t: could not archive TASK.md; nothing removed"
@@ -616,7 +623,7 @@ remove_task() {
     valid_name "$r"
     if [ -f "$dir/$r/.git" ]; then
       # longpaths: deep node_modules otherwise stop the removal halfway on Windows
-      git -c core.longpaths=true -C "$ROOT/$r" worktree remove "$dir/$r" ||
+      git -c core.longpaths=true -C "$ROOT/$r" worktree remove $force "$dir/$r" ||
         die "$t: could not remove worktree $r (a program has it open?); fix that and run the same command to finish"
     elif [ -e "$dir/$r" ]; then
       rm -rf "${dir:?}/$r" || die "$t: could not remove what is left of $r (a program has it open?); fix that and run the same command to finish"
@@ -695,24 +702,25 @@ cmd_pull() {
 }
 
 cmd_remove() {
-  local mode=$1 dry=false tasks=() t kept=0 named=true
+  local mode=$1 dry=false discard=false tasks=() t kept=0 named=true
   shift
   while [ $# -gt 0 ]; do
     case $1 in
       --dry-run) dry=true;;
+      --discard) [ "$mode" = rm ] || die "--discard only goes with rm: done is for work that shipped"; discard=true;;
       -*) die "unknown flag $1";;
       *) tasks+=("$1");;
     esac
     shift
   done
   if [ ${#tasks[@]} -eq 0 ]; then
-    [ "$mode" = done ] || die "usage: izumo rm <task...> [--dry-run]"
+    [ "$mode" = done ] || die "usage: izumo rm <task...> [--dry-run] [--discard]"
     named=false
     # shellcheck disable=SC2207  # task names are validated: no spaces, no globs
     tasks=($(all_tasks))
   fi
   for t in ${tasks[@]+"${tasks[@]}"}; do
-    remove_task "$mode" "$dry" "$t" || kept=1
+    remove_task "$mode" "$dry" "$t" "$discard" || kept=1
   done
   if $named; then return $kept; fi
 }

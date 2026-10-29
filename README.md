@@ -69,12 +69,12 @@ izumo done --dry-run && izumo done            # remove what has shipped
 | `base <branch> [--task T]` | Changes the branch a task is based on: repos added later start from it, and stages compare against it. Existing worktrees aren't rebased. |
 | `ls [task...] [--json] [--fetch]` | Stage per repo: `empty` (no commits yet), `wip`, `pr` (open, with review decision and CI: `approved`, `changes-requested`, `ci:failing`...), `base` (merged, not shipped), `prod`. Plus modified and untracked files, unpushed commits, what the task's agent is doing, and `[ready: izumo done]` when `done` would take the task. Reads the last fetch unless you pass `--fetch`. Plain `izumo` runs it. |
 | `done [task...] [--dry-run]` | Fetches, then removes tasks whose repos are all in `prod` or `empty` (at least one in `prod`). No args: sweeps all tasks. |
-| `rm <task...> [--dry-run]` | Removes a task even if it never shipped: a review, an abandoned idea. |
+| `rm <task...> [--dry-run] [--discard]` | Removes a task even if it never shipped: a review, an abandoned idea. `--discard` removes it even when that loses uncommitted changes, unpushed commits or unknown files; `--dry-run --discard` lists exactly what would be lost. |
 | `pull [repo...]` | Fetches the root's clones (pruning deleted branches) and fast-forwards the ones on a clean branch, so code you or an agent reads there is current. Clones with local commits or changes are only fetched, and it says why. |
 | `run [--task T] [--] <command...>` | Runs a command in each repo of the task, in order, with the hook variables set (`izumo run -- pnpm test`). Fails if it failed in any repo. |
 
 Neither `done`, `rm` nor `drop` removes anything that has uncommitted changes, unpushed commits or
-files it didn't create. "Unpushed" means the commit is on no remote branch and is not
+files it didn't create, unless you say `rm --discard`. "Unpushed" means the commit is on no remote branch and is not
 the head of a merged PR. Without `gh`, squash-merged work whose remote branch was
 deleted looks unpushed, and izumo keeps it. On Windows it also keeps a task whose folder
 a program has open (an editor, a terminal), since Windows would stop the removal halfway.

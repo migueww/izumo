@@ -42,7 +42,9 @@ must be on PATH; if it is missing, point the user to https://github.com/migueww/
 - **Removing:** only when the user asks. Name the task: `izumo done <task> --dry-run` (or
   `rm <task> --dry-run`) first, show the result, then run it for real. Bare `izumo done`
   sweeps every task; use it only when the user asks to clean up everything that shipped. Never work around a refusal
-  by committing, pushing or deleting files on your own; report what blocked it. A
+  by committing, pushing or deleting files on your own; report what blocked it. Use `rm
+  --discard` only when the user said to throw that work away; run it with `--dry-run`
+  first and show what would be lost. A
   removal that stopped halfway finishes by running the same command again.
 - `TASK.md` is local. When opening a PR, carry the decisions reviewers need into its
   description.
