@@ -308,9 +308,11 @@ for p in python3 python; do if "$p" -c '' 2>/dev/null; then PY=$p; break; fi; do
 [ -n "$PY" ] || fail "no python for the server test"
 serve() {  # serve <task> <repo>: a server running from that worktree, like pnpm dev; sets PORT
   PORT=$((20000 + RANDOM % 20000))
-  (cd "tasks/$1/$2" && exec "$PY" -m http.server "$PORT" --bind 127.0.0.1 --directory "$PWD" >/dev/null 2>&1) &
-  for _ in 1 2 3 4 5 6 7 8 9 10; do "$IZ" ls "$1" 2>/dev/null | grep -q "serving:$PORT" && return; sleep 1; done
-  fail "server on $PORT not seen by ls"
+  # a bare socket: http.server looks up DNS before listening, which hangs on macOS runners
+  (cd "tasks/$1/$2" && exec "$PY" -c 'import socket, sys, time
+s = socket.socket(); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(); time.sleep(300)' "$PORT" "$(pwd -P)") &
+  for _ in 1 2 3 4 5 6 7 8 9 10; do up "$PORT" && break; sleep 1; done
+  says "serving:$PORT" ls "$1"
 }
 up() { "$PY" -c "import socket; socket.create_connection(('127.0.0.1', $1), 2)" 2>/dev/null; }
 iz new served a b >/dev/null
