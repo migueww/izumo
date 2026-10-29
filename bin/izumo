@@ -565,7 +565,7 @@ servers() {
   done
   # listening = remote port 0; netstat's state column is translated, its numbers aren't
   if windows; then
-    listen=$(netstat -ano 2>/dev/null | awk '$1 == "TCP" && $3 ~ /:0$/ && $5 > 4 {n = split($2, a, ":"); print $5, a[n]}')
+    listen=$(netstat -ano 2>/dev/null | tr -d '\r' | awk '$1 == "TCP" && $3 ~ /:0$/ && $5 + 0 > 4 {n = split($2, a, ":"); print $5, a[n]}')
     dir=$(cygpath -m "$TASKS")
   else
     listen=$(lsof -nP -iTCP -sTCP:LISTEN -Fpn 2>/dev/null | awk '/^p/ {p = substr($0, 2)} /^n/ {n = split($0, a, ":"); print p, a[n]}')

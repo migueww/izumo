@@ -5,8 +5,15 @@ set -euo pipefail
 
 IZ="$(cd "$(dirname "$0")/.." && pwd)/bin/izumo"
 T=$(mktemp -d)
-# shellcheck disable=SC2046  # job pids
-trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$T"' EXIT
+# bash 3.2 exits with the trap's last status, so hand the test's own back
+cleanup() {
+  local st=$?
+  # shellcheck disable=SC2046  # job pids
+  kill $(jobs -p) 2>/dev/null
+  rm -rf "$T"
+  exit "$st"
+}
+trap cleanup EXIT
 exec </dev/null  # izumo asks before stopping servers only on a terminal
 
 export IZUMO_GH=none GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$T/gitconfig"
@@ -312,7 +319,10 @@ serve() {  # serve <task> <repo>: a server running from that worktree, like pnpm
   (cd "tasks/$1/$2" && exec "$PY" -c 'import socket, sys, time
 s = socket.socket(); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(); time.sleep(300)' "$PORT" "$(pwd -P)") &
   for _ in 1 2 3 4 5 6 7 8 9 10; do up "$PORT" && break; sleep 1; done
-  says "serving:$PORT" ls "$1"
+  grep -qF "serving:$PORT" <<<"$("$IZ" ls "$1" 2>&1)" && return
+  # CI-only failures: show what the runner sees
+  { netstat -ano | grep -F ":$PORT"; powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process | ? { \$_.CommandLine -like '*$PORT*' } | % { [string]\$_.ProcessId + ' ' + \$_.CommandLine }"; } >&2 2>/dev/null || true
+  fail "server on $PORT not seen by ls"
 }
 up() { "$PY" -c "import socket; socket.create_connection(('127.0.0.1', $1), 2)" 2>/dev/null; }
 iz new served a b >/dev/null
