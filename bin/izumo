@@ -3,7 +3,7 @@
 # https://github.com/migueww/izumo (MIT)
 set -euo pipefail
 
-VERSION=0.5.0
+VERSION=0.5.1
 GH=${IZUMO_GH:-gh}
 
 say() { echo "izumo: $*" >&2; }
@@ -80,6 +80,25 @@ base_ref() {
   fi
   git -C "$1" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null ||
     die "$(basename "$1"): origin/HEAD unknown; set BASE in .izumo or run: git -C '$1' remote set-head origin -a"
+}
+
+# on_origin <clone> <branch>: is origin/<branch> there, fetching once if not?
+on_origin() {
+  git -C "$1" show-ref --verify --quiet "refs/remotes/origin/$2" ||
+    { git -C "$1" fetch --quiet origin 2>/dev/null && git -C "$1" show-ref --verify --quiet "refs/remotes/origin/$2"; }
+}
+
+# check_base <branch> <repo...>: a base asked for by name must be on origin in at least one
+# repo; otherwise it is a typo or an unpushed branch, and the default branch would stand in silently
+check_base() {
+  local b=$1 r clones=0
+  shift
+  for r; do
+    [ -d "$ROOT/$r/.git" ] || continue
+    clones=$((clones + 1))
+    if on_origin "$ROOT/$r" "$b"; then return 0; fi
+  done
+  [ "$clones" -eq 0 ] || die "no repo has origin/$b; push it first, or check the name"
 }
 
 prod_ref() {
@@ -177,6 +196,7 @@ add_repos() {
       git -C "$src" worktree add --quiet "$wt" "$T_BRANCH"
     else
       ref=$(base_ref "$src" "$T_BASE")
+      if [ -n "$T_BASE" ] && [ "$ref" != "origin/$T_BASE" ]; then say "$repo: no origin/$T_BASE, starting from $ref"; fi
       git -C "$src" rev-parse --verify --quiet "$ref^{commit}" >/dev/null || die "$repo: no $ref"
       git -C "$src" worktree add --quiet --no-track -b "$T_BRANCH" "$wt" "$ref"
     fi
@@ -271,6 +291,7 @@ cmd_new() {
   done
   [ -n "$task" ] || die "usage: izumo new <task> [repo...] [--branch B] [--base BRANCH]"
   valid_name "$task"
+  if [ -n "$base" ]; then check_base "$base" ${repos[@]+"${repos[@]}"}; fi
   create_task "$task" "${branch:-$PREFIX$task}" "$base"
   if [ ${#repos[@]} -gt 0 ]; then add_repos "$task" "${repos[@]}" >/dev/null; fi
   echo "$TASKS/$task"
@@ -369,10 +390,10 @@ cmd_base() {
   [ -n "$task" ] || task=$(cwd_task) || die "not inside a task folder; pass --task"
   load_task "$task"
   git check-ref-format --branch "$branch" >/dev/null 2>&1 || die "invalid branch name: $branch"
+  check_base "$branch" $(worktrees "$task")
   save_task "$task" "$T_BRANCH" "$branch"
   for r in $(worktrees "$task"); do
-    git -C "$ROOT/$r" show-ref --verify --quiet "refs/remotes/origin/$branch" ||
-      say "$r: no origin/$branch, uses $(base_ref "$ROOT/$r" "$branch")"
+    on_origin "$ROOT/$r" "$branch" || say "$r: no origin/$branch, uses $(base_ref "$ROOT/$r" "$branch")"
   done
   echo "$task: base $branch"
 }

@@ -61,7 +61,7 @@ izumo done --dry-run && izumo done            # remove what has shipped
 
 | Command | Does |
 |---|---|
-| `new <task> [repo...] [--branch B] [--base BRANCH]` | Creates `tasks/<task>/` with a worktree per repo, `TASK.md`, `AGENTS.md`, `CLAUDE.md` and a VS Code workspace. Uses `B` if it already exists locally or on origin, else creates it from the base. |
+| `new <task> [repo...] [--branch B] [--base BRANCH]` | Creates `tasks/<task>/` with a worktree per repo, `TASK.md`, `AGENTS.md`, `CLAUDE.md` and a VS Code workspace. Uses `B` if it already exists locally or on origin, else creates it from the base. `--base` can be another task's pushed branch, to stack on it; repos without it start from their default branch and say so. |
 | `add <repo...> [--task T]` | Adds repos to a task. |
 | `drop <repo...> [--task T]` | Takes repos out of a task: removes the worktree and the local branch. Refuses if work would be lost. |
 | `adopt <worktree...> [--task T]` | Moves worktrees you made by hand, or a repo from another task, into a task. Creates the task if needed, on the first worktree's branch. |

@@ -216,9 +216,17 @@ iz base main --task taken >/dev/null
 grep -q 'T_BASE=main' tasks/taken/.task || fail "base not saved"
 iz add a --task taken >/dev/null
 [ "$(git -C tasks/taken/a rev-parse HEAD)" = "$(git -C a rev-parse origin/main)" ] || fail "add ignored the new base"
-says 'a: no origin/nope, uses origin/main' base nope --task taken
+refuses 'no repo has origin/nope' base nope --task taken  # a typo or an unpushed branch
+grep -q 'T_BASE=main' tasks/taken/.task || fail "refused base was saved"
 refuses 'invalid branch name' base 'a..b' --task taken
-iz rm moved taken >/dev/null || fail "rm after mv"
+
+# stacked task: starts from another task's pushed branch; repos without it say they fall back
+refuses 'no repo has origin/taken' new stacked a --base taken
+[ ! -e tasks/stacked ] || fail "refused new left a task behind"
+git -C tasks/taken/a push -q origin taken
+says 'b: no origin/taken, starting from origin/main' new stacked a b --base taken
+[ "$(git -C tasks/stacked/a rev-parse HEAD)" = "$(git -C a rev-parse origin/taken)" ] || fail "stacked base"
+iz rm moved taken stacked >/dev/null || fail "rm after mv"
 
 # TASK_TEMPLATE: the first section is the goal, whatever its heading
 printf '# {{task}}\n\n## Objetivo\nfazer x\n\n## Decisoes\n' > tpl.md
