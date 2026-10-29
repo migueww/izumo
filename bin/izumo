@@ -3,7 +3,7 @@
 # https://github.com/migueww/izumo (MIT)
 set -euo pipefail
 
-VERSION=0.5.1
+VERSION=0.6.0
 GH=${IZUMO_GH:-gh}
 
 say() { echo "izumo: $*" >&2; }
@@ -23,6 +23,7 @@ izumo: one folder per task, one git worktree per repo
   izumo ls [task...] [--json] [--fetch]
   izumo done [task...] [--dry-run]
   izumo rm <task...> [--dry-run]
+  izumo run [--task T] [--] <command...>   run a command in each repo of a task
 
 Run it anywhere under your multi-repo root, the folder holding a .izumo file.
 EOF
@@ -180,6 +181,19 @@ create_task() {
   write_workspace "$1"
 }
 
+# in_wt <task> <repo> <command...>: runs it inside the worktree with the variables .izumo hooks get
+in_wt() {
+  local t=$1 r=$2 wt=$TASKS/$1/$2
+  shift 2
+  ( cd "$wt" && BRANCH=$(git branch --show-current) && export TASK=$t REPO=$r SRC=$ROOT/$r WT=$wt BRANCH && "$@" )
+}
+
+# pre_remove_ok <task> <repo>: runs the pre_remove hook; it must succeed and leave the worktree clean
+pre_remove_ok() {
+  if ! in_wt "$1" "$2" pre_remove; then say "$1: kept (pre_remove failed in $2)"; return 1; fi
+  if [ -n "$(git -C "$TASKS/$1/$2" status --porcelain)" ]; then say "$1: kept (pre_remove left changes in $2)"; return 1; fi
+}
+
 add_repos() {
   local task=$1 repo src wt ref
   shift
@@ -201,8 +215,7 @@ add_repos() {
       git -C "$src" worktree add --quiet --no-track -b "$T_BRANCH" "$wt" "$ref"
     fi
     write_workspace "$task"
-    ( cd "$wt" && export TASK=$task REPO=$repo SRC=$src WT=$wt BRANCH=$T_BRANCH && post_add ) ||
-      say "$repo: post_add hook failed (worktree kept)"
+    in_wt "$task" "$repo" post_add || say "$repo: post_add hook failed (worktree kept)"
     echo "$wt"
   done
 }
@@ -390,6 +403,7 @@ cmd_base() {
   [ -n "$task" ] || task=$(cwd_task) || die "not inside a task folder; pass --task"
   load_task "$task"
   git check-ref-format --branch "$branch" >/dev/null 2>&1 || die "invalid branch name: $branch"
+  # shellcheck disable=SC2046  # names are validated: no spaces, no globs
   check_base "$branch" $(worktrees "$task")
   save_task "$task" "$T_BRANCH" "$branch"
   for r in $(worktrees "$task"); do
@@ -409,6 +423,7 @@ cmd_ls() {
     esac
     shift
   done
+  # shellcheck disable=SC2207  # task names are validated: no spaces, no globs
   [ ${#tasks[@]} -gt 0 ] || tasks=($(all_tasks))
   for t in ${tasks[@]+"${tasks[@]}"}; do load_task "$t"; done
 
@@ -425,7 +440,8 @@ cmd_ls() {
 
   # each repo costs a few git calls and maybe a gh API call: run them 8 at a time
   tmp=$(mktemp -d)
-  trap "rm -rf '$tmp'" EXIT  # expanded now: $tmp is local and gone by exit
+  # shellcheck disable=SC2064  # expanded now on purpose: $tmp is local and gone by exit
+  trap "rm -rf '$tmp'" EXIT
   for t in ${tasks[@]+"${tasks[@]}"}; do
     mkdir -p "$tmp/$t"
     for r in $(worktrees "$t"); do
@@ -446,7 +462,7 @@ cmd_ls() {
     # repos first: the header says whether done would take the task
     lines= rsep= shipped=false ready=true
     for r in $(worktrees "$t"); do
-      R_BRANCH=? R_STAGE=error R_MODIFIED=0 R_UNTRACKED=0 R_UNPUSHED=0 R_PR= R_REVIEW= R_CI=
+      R_BRANCH='?' R_STAGE=error R_MODIFIED=0 R_UNTRACKED=0 R_UNPUSHED=0 R_PR= R_REVIEW= R_CI=
       if [ -f "$tmp/$t/$r" ]; then
         IFS=$'\037' read -r R_BRANCH R_STAGE R_MODIFIED R_UNTRACKED R_UNPUSHED R_PR R_REVIEW R_CI < "$tmp/$t/$r"
       fi
@@ -529,6 +545,7 @@ cmd_drop() {
     if $R_DIRTY; then die "$r: kept (uncommitted changes: $R_MODIFIED modified, $R_UNTRACKED untracked)"; fi
     if [ "$R_UNPUSHED" -gt 0 ]; then die "$r: kept ($R_UNPUSHED unpushed commit(s))"; fi
     if in_use "$wt"; then die "$r: kept ($IN_USE)"; fi
+    pre_remove_ok "$task" "$r" || exit 1
     git -c core.longpaths=true -C "$ROOT/$r" worktree remove "$wt" ||
       die "$r: could not remove the worktree (a program has it open?)"
     git -C "$ROOT/$r" worktree prune
@@ -575,6 +592,7 @@ remove_task() {
 
   # set -e is off in here (we run under ||), so every step checks itself
   if ! $resuming; then
+    for r in $(worktrees "$t"); do pre_remove_ok "$t" "$r" || return 1; done
     if [ -f "$dir/TASK.md" ]; then
       { mkdir -p "$TASKS/.archive" && cp "$dir/TASK.md" "$TASKS/.archive/$(date +%Y-%m-%d)-$t.md"; } ||
         die "$t: could not archive TASK.md; nothing removed"
@@ -601,6 +619,26 @@ remove_task() {
   echo "removed $t"
 }
 
+# run: one command in each repo of a task, in order; fails if it failed in any
+cmd_run() {
+  local task= r failed=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --task) task=${2:?--task needs a value}; shift 2;;
+      --) shift; break;;
+      *) break;;
+    esac
+  done
+  [ $# -gt 0 ] || die "usage: izumo run [--task T] [--] <command...>"
+  [ -n "$task" ] || task=$(cwd_task) || die "not inside a task folder; pass --task"
+  load_task "$task"
+  for r in $(worktrees "$task"); do
+    echo "== $r"
+    in_wt "$task" "$r" "$@" || failed="$failed $r"
+  done
+  [ -z "$failed" ] || die "failed in:$failed"
+}
+
 cmd_remove() {
   local mode=$1 dry=false tasks=() t kept=0 named=true
   shift
@@ -615,6 +653,7 @@ cmd_remove() {
   if [ ${#tasks[@]} -eq 0 ]; then
     [ "$mode" = done ] || die "usage: izumo rm <task...> [--dry-run]"
     named=false
+    # shellcheck disable=SC2207  # task names are validated: no spaces, no globs
     tasks=($(all_tasks))
   fi
   for t in ${tasks[@]+"${tasks[@]}"}; do
@@ -625,7 +664,7 @@ cmd_remove() {
 
 cmd=${1:-}
 case $cmd in
-  new|add|drop|adopt|mv|base|ls|done|rm) shift;;
+  new|add|drop|adopt|mv|base|ls|done|rm|run) shift;;
   _agent) shift; agent_hook "$@"; exit 0;;
   '')
     if [ -z "${IZUMO_ROOT:-}" ] && ! (find_root) >/dev/null 2>&1; then usage; exit; fi
@@ -634,6 +673,12 @@ case $cmd in
   -h|--help|help) usage; exit;;
   *) usage >&2; exit 2;;
 esac
+# -h anywhere asks for help, except after run, where the rest is the command's own
+if [ "$cmd" = run ]; then
+  case ${1:-} in -h|--help) usage; exit;; esac
+else
+  for a; do case $a in -h|--help) usage; exit;; esac; done
+fi
 
 ROOT=${IZUMO_ROOT:-$(find_root)}
 ROOT=$(cd "$ROOT" && pwd -P)
@@ -641,6 +686,7 @@ ROOT=$(cd "$ROOT" && pwd -P)
 TASKS=$ROOT/tasks
 BASE= PROD= PREFIX= TASK_TEMPLATE=
 post_add() { :; }
+pre_remove() { :; }
 # .izumo is sourced as bash: trust it like a Makefile
 . "$ROOT/.izumo"
 case $TASK_TEMPLATE in ''|/*|[A-Za-z]:*) ;; *) TASK_TEMPLATE=$ROOT/$TASK_TEMPLATE;; esac
@@ -654,4 +700,5 @@ case $cmd in
   base) cmd_base "$@";;
   ls) cmd_ls "$@";;
   done|rm) cmd_remove "$cmd" "$@";;
+  run) cmd_run "$@";;
 esac

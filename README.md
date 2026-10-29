@@ -70,6 +70,7 @@ izumo done --dry-run && izumo done            # remove what has shipped
 | `ls [task...] [--json] [--fetch]` | Stage per repo: `empty` (no commits yet), `wip`, `pr` (open, with review decision and CI: `approved`, `changes-requested`, `ci:failing`...), `base` (merged, not shipped), `prod`. Plus modified and untracked files, unpushed commits, what the task's agent is doing, and `[ready: izumo done]` when `done` would take the task. Reads the last fetch unless you pass `--fetch`. Plain `izumo` runs it. |
 | `done [task...] [--dry-run]` | Fetches, then removes tasks whose repos are all in `prod` or `empty` (at least one in `prod`). No args: sweeps all tasks. |
 | `rm <task...> [--dry-run]` | Removes a task even if it never shipped: a review, an abandoned idea. |
+| `run [--task T] [--] <command...>` | Runs a command in each repo of the task, in order, with the hook variables set (`izumo run -- pnpm test`). Fails if it failed in any repo. |
 
 Neither `done`, `rm` nor `drop` removes anything that has uncommitted changes, unpushed commits or
 files it didn't create. "Unpushed" means the commit is on no remote branch and is not
@@ -95,10 +96,14 @@ post_add() {        # runs inside each new worktree; TASK REPO SRC WT BRANCH are
   cp "$SRC/.env" . 2>/dev/null || true
   if [ -f pnpm-lock.yaml ]; then pnpm install; fi
 }
+
+pre_remove() {      # runs inside each worktree before done, rm or drop removes it;
+  docker compose -p "$TASK-$REPO" down -v 2>/dev/null || true
+}                   # failing, or leaving changes behind, keeps the task
 ```
 
 Running two tasks' services at once? Use `$TASK` in `post_add` to set
-`COMPOSE_PROJECT_NAME` or pick ports.
+`COMPOSE_PROJECT_NAME` or pick ports, and tear them down in `pre_remove`.
 
 ## With agents
 

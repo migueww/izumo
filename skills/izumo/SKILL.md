@@ -31,6 +31,8 @@ must be on PATH; if it is missing, point the user to https://github.com/migueww/
 - **Before ending a session**, update "Status / next step" with the next thing a person
   does ("test a handover in hml", "decide the template item"), never PR or merge state:
   that changes after your session ends, and `izumo ls` always has it right.
+- **Same command in every repo** (tests, lint, `git status`): `izumo run -- <command>` from
+  inside the task folder, instead of a loop. It fails if any repo failed and names them.
 - **State:** `izumo ls <task> --json`. Add `--fetch` when freshness matters (after a
   merge or promotion). The `agent` field comes from this plugin's hooks; don't write
   `.agent` yourself.

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end check on real git repos in a temp dir. No network; gh is faked.
+# shellcheck disable=SC2015,SC2155  # `a && b || fail` and export x=$(...) are fine in a test
 set -euo pipefail
 
 IZ="$(cd "$(dirname "$0")/.." && pwd)/bin/izumo"
@@ -235,5 +236,40 @@ iz new tpl >/dev/null
 head -1 tasks/tpl/TASK.md | grep -qx '# tpl' || fail "template not filled"
 says 'fazer x' ls tpl
 iz rm tpl >/dev/null || fail "rm tpl"
+
+# help: -h works after any command, but after run it belongs to the command
+says 'izumo new <task>' new --help
+says 'izumo ls' ls x -h
+
+# run: in each repo, in order, with the hook variables; fails if any repo failed
+iz new runner a b >/dev/null
+out=$(cd tasks/runner && "$IZ" run -- sh -c 'echo "$TASK/$REPO on $BRANCH"') || fail "run: $out"
+[ "$out" = "$(printf '== a\nrunner/a on runner\n== b\nrunner/b on runner')" ] || fail "run output: $out"
+refuses 'failed in: b' run --task runner -- sh -c '[ "$REPO" = a ]'
+out=$("$IZ" run --task runner git -h 2>&1) || true
+grep -q '== a' <<<"$out" || fail "run took git's -h as its own: $out"
+iz rm runner >/dev/null || fail "rm runner"
+
+# pre_remove: runs in each worktree before anything is removed; failing keeps the task whole
+cat >> .izumo <<'EOF'
+pre_remove() { [ ! -e "$SRC/../keep-$TASK" ] && echo "$TASK $REPO" >> "$SRC/../rm.log"; }
+EOF
+iz new hooked a b >/dev/null
+touch keep-hooked
+refuses 'pre_remove failed in a' rm hooked
+[ -f tasks/hooked/a/.git ] && [ ! -e tasks/hooked/.removing ] && ! ls tasks/.archive/*-hooked.md >/dev/null 2>&1 ||
+  fail "a failed pre_remove still removed something"
+refuses 'pre_remove failed in b' drop b --task hooked
+rm keep-hooked
+iz drop b --task hooked >/dev/null || fail "drop with pre_remove"
+grep -qx 'hooked b' rm.log || fail "drop skipped pre_remove"
+iz rm hooked >/dev/null || fail "rm with pre_remove"
+grep -qx 'hooked a' rm.log || fail "rm skipped pre_remove"
+echo 'pre_remove() { touch left-behind; }' >> .izumo
+iz new messy a >/dev/null
+refuses 'pre_remove left changes in a' rm messy
+echo 'pre_remove() { :; }' >> .izumo
+rm tasks/messy/a/left-behind
+iz rm messy >/dev/null || fail "rm messy"
 
 echo ok

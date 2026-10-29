@@ -1,0 +1,11 @@
+# Style this project uses on purpose:
+# x= y= declares empty variables
+disable=SC1007
+# "done" is a subcommand name
+disable=SC1010
+# words like pr, ls and review-required are values, not commands
+disable=SC2100,SC2209
+# .izumo and .task are sourced from the user's root
+disable=SC1090,SC1091
+# jq programs and printf formats live in single quotes
+disable=SC2016
