@@ -195,6 +195,31 @@ git -C a worktree list | grep -q 'tasks/adopted/a' || fail "git does not know th
 refuses 'not a git worktree' adopt tasks --task adopted
 iz rm adopted >/dev/null || fail "rm adopted"
 
+# adopt from another task: the task it left stops listing it
+iz new from-t a b >/dev/null
+iz adopt tasks/from-t/b --task to-t >/dev/null
+grep -q '"path": "b"' tasks/from-t/from-t.code-workspace && fail "old task's workspace still lists b"
+grep -q '"path": "b"' tasks/to-t/to-t.code-workspace || fail "new task's workspace misses b"
+iz rm to-t >/dev/null || fail "rm to-t"
+
+# mv: git follows the worktrees to the new folder; the branch keeps its name
+iz mv from-t moved >/dev/null
+[ ! -e tasks/from-t ] && [ -f tasks/moved/moved.code-workspace ] && [ ! -e tasks/moved/from-t.code-workspace ] || fail "mv folder"
+head -1 tasks/moved/TASK.md | grep -qx '# moved' || fail "mv TASK.md heading"
+git -C a worktree list | grep -q 'tasks/moved/a' || fail "git does not know the new path"
+[ "$(git -C tasks/moved/a branch --show-current)" = from-t ] || fail "mv renamed the branch"
+iz new taken >/dev/null
+refuses "task 'taken' already exists" mv moved taken
+
+# base: repos added later start from it
+iz base main --task taken >/dev/null
+grep -q 'T_BASE=main' tasks/taken/.task || fail "base not saved"
+iz add a --task taken >/dev/null
+[ "$(git -C tasks/taken/a rev-parse HEAD)" = "$(git -C a rev-parse origin/main)" ] || fail "add ignored the new base"
+says 'a: no origin/nope, uses origin/main' base nope --task taken
+refuses 'invalid branch name' base 'a..b' --task taken
+iz rm moved taken >/dev/null || fail "rm after mv"
+
 # TASK_TEMPLATE: the first section is the goal, whatever its heading
 printf '# {{task}}\n\n## Objetivo\nfazer x\n\n## Decisoes\n' > tpl.md
 echo 'TASK_TEMPLATE=tpl.md' >> .izumo

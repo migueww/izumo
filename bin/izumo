@@ -3,7 +3,7 @@
 # https://github.com/migueww/izumo (MIT)
 set -euo pipefail
 
-VERSION=0.4.0
+VERSION=0.5.0
 GH=${IZUMO_GH:-gh}
 
 say() { echo "izumo: $*" >&2; }
@@ -16,8 +16,10 @@ izumo: one folder per task, one git worktree per repo
   izumo                                    same as izumo ls
   izumo new <task> [repo...] [--branch B] [--base BRANCH]
   izumo add <repo...> [--task T]
-  izumo drop <repo...> [--task T]         take repos out of a task, keeping the task
+  izumo drop <repo...> [--task T]          take repos out of a task, keeping the task
   izumo adopt <worktree...> [--task T]     move existing worktrees into a task
+  izumo mv <task> <new-name>               rename a task (branches keep their names)
+  izumo base <branch> [--task T]           change the branch a task is based on
   izumo ls [task...] [--json] [--fetch]
   izumo done [task...] [--dry-run]
   izumo rm <task...> [--dry-run]
@@ -146,13 +148,15 @@ EOF
   printf '@AGENTS.md\n@TASK.md\n' > "$dir/CLAUDE.md"
 }
 
+save_task() { printf 'T_BRANCH=%q\nT_BASE=%q\n' "$2" "$3" > "$TASKS/$1/.task"; }
+
 # create_task <task> <branch> <base>
 create_task() {
   [ -e "$TASKS/$1" ] && die "task '$1' already exists"
   [ -z "$TASK_TEMPLATE" ] || [ -f "$TASK_TEMPLATE" ] || die "TASK_TEMPLATE not found: $TASK_TEMPLATE"
   git check-ref-format --branch "$2" >/dev/null 2>&1 || die "invalid branch name: $2"
   mkdir -p "$TASKS/$1"
-  printf 'T_BRANCH=%q\nT_BASE=%q\n' "$2" "$3" > "$TASKS/$1/.task"
+  save_task "$@"
   write_task_files "$1"
   write_workspace "$1"
 }
@@ -289,7 +293,7 @@ cmd_add() {
 
 # moves worktrees made by hand (or by another tool) into a task, creating it if needed
 cmd_adopt() {
-  local task= paths=() p abs src repo dest br
+  local task= paths=() p abs src repo dest br from
   while [ $# -gt 0 ]; do
     case $1 in
       --task) task=${2:?--task needs a value}; shift 2; continue;;
@@ -308,6 +312,7 @@ cmd_adopt() {
     src=$(cd "$abs" && cd "$(git rev-parse --git-common-dir)/.." && pwd -P) || die "$p: can't find its repo"
     [ "$(dirname "$src")" = "$ROOT" ] || die "$p: its repo $src is not a clone in $ROOT"
     repo=$(basename "$src")
+    case $abs in "$TASKS"/*/*) from=${abs#"$TASKS"/}; from=${from%%/*};; *) from=;; esac
     if [ ! -f "$TASKS/$task/.task" ]; then
       br=$(git -C "$abs" branch --show-current)
       create_task "$task" "${br:-$PREFIX$task}" ""
@@ -316,8 +321,60 @@ cmd_adopt() {
     [ -e "$dest" ] && die "$repo is already in task '$task'"
     git -C "$src" worktree move "$abs" "$dest" || die "$p: git could not move it (locked or has submodules?)"
     write_workspace "$task"
+    # it came from another task: that one's workspace must stop listing it
+    if [ -n "$from" ] && [ -f "$TASKS/$from/.task" ]; then write_workspace "$from"; fi
     echo "$dest"
   done
+}
+
+# mv: renames a task; branches keep their names, since they may have PRs open
+cmd_mv() {
+  [ $# -eq 2 ] || die "usage: izumo mv <task> <new-name>"
+  local old=$1 new=$2 dir=$TASKS/$1 r
+  load_task "$old"
+  valid_name "$new"
+  [ ! -e "$TASKS/$new" ] || die "task '$new' already exists"
+  [ ! -f "$dir/.removing" ] || die "$old: a removal stopped halfway; finish it with izumo rm $old"
+  case "$(pwd -P)/" in "$dir"/*) die "$old: you are inside it, cd out first";; esac
+  if in_use "$dir"; then die "$old: kept ($IN_USE)"; fi
+  mv "$dir" "$TASKS/$new" || die "$old: could not rename the folder"
+  dir=$TASKS/$new
+  # the worktrees moved under git's feet; repair points each repo at the new path
+  for r in $(worktrees "$new"); do
+    git -C "$ROOT/$r" worktree repair "$dir/$r" >/dev/null 2>&1 ||
+      die "$r: git lost track of the worktree; run: git -C '$ROOT/$r' worktree repair '$dir/$r'"
+  done
+  rm -f "$dir/$old.code-workspace"
+  write_workspace "$new"
+  # the default TASK.md and most templates start with the task name as heading
+  if [ "$(head -1 "$dir/TASK.md" 2>/dev/null)" = "# $old" ]; then
+    { echo "# $new"; tail -n +2 "$dir/TASK.md"; } > "$dir/.TASK.md.tmp" && mv "$dir/.TASK.md.tmp" "$dir/TASK.md"
+  fi
+  echo "$dir"
+}
+
+# base: changes the branch a task's new repos start from and its stages compare against.
+# Existing worktrees stay where they are: rebasing them is git's job.
+cmd_base() {
+  local task= branch= r
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --task) task=${2:?--task needs a value}; shift 2; continue;;
+      -*) die "unknown flag $1";;
+      *) [ -z "$branch" ] || die "usage: izumo base <branch> [--task T]"; branch=$1;;
+    esac
+    shift
+  done
+  [ -n "$branch" ] || die "usage: izumo base <branch> [--task T]"
+  [ -n "$task" ] || task=$(cwd_task) || die "not inside a task folder; pass --task"
+  load_task "$task"
+  git check-ref-format --branch "$branch" >/dev/null 2>&1 || die "invalid branch name: $branch"
+  save_task "$task" "$T_BRANCH" "$branch"
+  for r in $(worktrees "$task"); do
+    git -C "$ROOT/$r" show-ref --verify --quiet "refs/remotes/origin/$branch" ||
+      say "$r: no origin/$branch, uses $(base_ref "$ROOT/$r" "$branch")"
+  done
+  echo "$task: base $branch"
 }
 
 cmd_ls() {
@@ -547,7 +604,7 @@ cmd_remove() {
 
 cmd=${1:-}
 case $cmd in
-  new|add|drop|adopt|ls|done|rm) shift;;
+  new|add|drop|adopt|mv|base|ls|done|rm) shift;;
   _agent) shift; agent_hook "$@"; exit 0;;
   '')
     if [ -z "${IZUMO_ROOT:-}" ] && ! (find_root) >/dev/null 2>&1; then usage; exit; fi
@@ -572,6 +629,8 @@ case $cmd in
   add) cmd_add "$@";;
   drop) cmd_drop "$@";;
   adopt) cmd_adopt "$@";;
+  mv) cmd_mv "$@";;
+  base) cmd_base "$@";;
   ls) cmd_ls "$@";;
   done|rm) cmd_remove "$cmd" "$@";;
 esac

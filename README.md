@@ -41,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/migueww/izumo/main/bin/izumo -o ~/.
 chmod +x ~/.local/bin/izumo
 ```
 
-Needs bash and git ≥ 2.22. Optional: [`gh`](https://cli.github.com), for PR state and
+Needs bash and git ≥ 2.29. Optional: [`gh`](https://cli.github.com), for PR state and
 squash-merge detection.
 
 **Windows:** clone the repo and put its `bin` folder on your PATH. `izumo.cmd` runs the
@@ -64,7 +64,9 @@ izumo done --dry-run && izumo done            # remove what has shipped
 | `new <task> [repo...] [--branch B] [--base BRANCH]` | Creates `tasks/<task>/` with a worktree per repo, `TASK.md`, `AGENTS.md`, `CLAUDE.md` and a VS Code workspace. Uses `B` if it already exists locally or on origin, else creates it from the base. |
 | `add <repo...> [--task T]` | Adds repos to a task. |
 | `drop <repo...> [--task T]` | Takes repos out of a task: removes the worktree and the local branch. Refuses if work would be lost. |
-| `adopt <worktree...> [--task T]` | Moves worktrees you made by hand into a task. Creates the task if needed, on the first worktree's branch. |
+| `adopt <worktree...> [--task T]` | Moves worktrees you made by hand, or a repo from another task, into a task. Creates the task if needed, on the first worktree's branch. |
+| `mv <task> <new-name>` | Renames a task. Branches keep their names, since they may have PRs open. |
+| `base <branch> [--task T]` | Changes the branch a task is based on: repos added later start from it, and stages compare against it. Existing worktrees aren't rebased. |
 | `ls [task...] [--json] [--fetch]` | Stage per repo: `empty` (no commits yet), `wip`, `pr` (open, with review decision and CI: `approved`, `changes-requested`, `ci:failing`...), `base` (merged, not shipped), `prod`. Plus modified and untracked files, unpushed commits, what the task's agent is doing, and `[ready: izumo done]` when `done` would take the task. Reads the last fetch unless you pass `--fetch`. Plain `izumo` runs it. |
 | `done [task...] [--dry-run]` | Fetches, then removes tasks whose repos are all in `prod` or `empty` (at least one in `prod`). No args: sweeps all tasks. |
 | `rm <task...> [--dry-run]` | Removes a task even if it never shipped: a review, an abandoned idea. |

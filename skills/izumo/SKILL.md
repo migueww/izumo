@@ -21,7 +21,11 @@ must be on PATH; if it is missing, point the user to https://github.com/migueww/
   Decisions saying why the repo joined.
 - **Scope shrinks:** `izumo drop <repo>` from inside the task folder, never `git worktree
   remove` or hand edits to the workspace file. Add one line under Decisions saying why the
-  repo left.
+  repo left. A repo that belongs to another task moves with `izumo adopt
+  tasks/<from>/<repo> --task <to>`.
+- **Renaming a task or changing its base:** `izumo mv <task> <new-name>`, `izumo base
+  <branch>`. Never rename task folders or edit `.task` by hand: git tracks the worktree
+  paths.
 - **TASK.md holds only what git can't tell:** goal, status / next step, decisions, open
   items. Never list repos, branches or PRs there; `izumo ls <task> --json` has them.
 - **Before ending a session**, update "Status / next step" with the next thing a person
