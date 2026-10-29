@@ -34,18 +34,19 @@ On Claude Code older than 2.1.275, run `/plugin marketplace add migueww/izumo`, 
 default: turn them on in `/plugin` → Marketplaces, or run
 `/plugin marketplace update izumo`.
 
-**Your own terminal** (also what other agents use):
+**Your own terminal** (also what other agents use): download the binary for your system
+from the [latest release](https://github.com/migueww/izumo/releases/latest), rename it to
+`izumo` (`izumo.exe` on Windows) and put it on your PATH. Or, with Go:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/migueww/izumo/main/bin/izumo -o ~/.local/bin/izumo
-chmod +x ~/.local/bin/izumo
+go install github.com/migueww/izumo/cmd/izumo@latest
 ```
 
-Needs bash and git ≥ 2.29. Optional: [`gh`](https://cli.github.com), for PR state and
-squash-merge detection.
+Needs git ≥ 2.29, and bash, which reads `.izumo` (on Windows, Git for Windows' bash).
+Optional: [`gh`](https://cli.github.com), for PR state and squash-merge detection.
 
-**Windows:** clone the repo and put its `bin` folder on your PATH. `izumo.cmd` runs the
-script with Git for Windows' bash, so `izumo` works in PowerShell, cmd and Git Bash.
+The plugin's `bin/izumo` is a small script that downloads the release binary on first
+use, checks it against the release's checksums and keeps it in `~/.cache/izumo`.
 
 ## Use
 
@@ -84,9 +85,8 @@ again finishes it.
 A dev server left running from the task (`pnpm dev` on :3000) is no reason to keep it.
 `done`, `rm` and `drop` name the servers listening on a port from the worktrees they
 remove and ask before stopping them; `--stop` or `--no-stop` answers ahead, and without
-a terminal (an agent) one of them is required. On Windows izumo finds a server by its
-command line, which holds the worktree's path when it runs from `node_modules`; Linux
-and macOS also match its folder, through `lsof`.
+a terminal (an agent) one of them is required. izumo finds a server by its folder, or by
+the worktree's path in its command line, as when it runs from `node_modules`.
 
 ## Configure
 
@@ -118,7 +118,8 @@ Running two tasks' services at once? Use `$TASK` in `post_add` to set
 The task folder is the context: start your agent in `tasks/<task>/` and it sees only
 the repos that matter. `AGENTS.md` and `CLAUDE.md` point it to `TASK.md`, so a new
 session picks up where the last one stopped. Agents read state with `izumo ls --json`.
-Nothing in izumo prompts, so agents can run every command.
+izumo asks only on a terminal (before stopping dev servers, which a flag answers), so
+agents can run every command.
 
 Keep `TASK.md` to what git can't tell: goal, status / next step, decisions, open items.
 Repos, branches and PRs come from `ls`. `TASK.md` lives only on your machine, so move

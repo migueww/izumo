@@ -38,9 +38,12 @@ if [ ! -f "$bin" ]; then
   curl -fsSL "$RELEASES/v$VERSION/$name" -o "$tmp" ||
     { echo "izumo: download failed: $RELEASES/v$VERSION/$name" >&2; exit 1; }
   want=$(curl -fsSL "$RELEASES/v$VERSION/checksums.txt" | awk -v n="$name" '$2 == n || $2 == "*" n {print $1}')
-  if command -v sha256sum >/dev/null; then got=$(sha256sum "$tmp"); else got=$(shasum -a 256 "$tmp"); fi
-  [ -n "$want" ] && [ "${got%% *}" = "$want" ] ||
-    { echo "izumo: $name does not match the release's checksums.txt; not running it" >&2; exit 1; }
+  # from stdin: sha256sum marks names holding a backslash (Windows paths) with a leading \
+  if command -v sha256sum >/dev/null; then got=$(sha256sum < "$tmp"); else got=$(shasum -a 256 < "$tmp"); fi
+  if [ -z "$want" ] || [ "${got%% *}" != "$want" ]; then
+    echo "izumo: $name does not match the release's checksums.txt; not running it" >&2
+    exit 1
+  fi
   chmod +x "$tmp"
   mv -f "$tmp" "$bin"
 fi
