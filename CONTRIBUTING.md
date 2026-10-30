@@ -39,6 +39,7 @@ cmd/izumo/      the CLI: one package, one file per concern
   config.go     .izumo, bash, hooks           commands.go new add adopt mv base run pull
   git.go        git, origin, stages, PRs      ls.go       ls and the agent hook
   remove.go     done, rm, drop                servers.go  dev servers on a task's ports
+  color*.go     ls colors, on terminals only
 bin/izumo       the shim: downloads the release binary, checks it, runs it
 skills/izumo/   the skill that teaches agents to use izumo
 hooks/          Claude Code hooks: what each task's agent is doing
