@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -29,49 +31,57 @@ func findRoot() (string, error) {
 	return d, nil
 }
 
-func setup() {
+func setup() error {
 	r := os.Getenv("IZUMO_ROOT")
 	if r == "" {
 		var err error
 		if r, err = findRoot(); err != nil {
 			wd, _ := os.Getwd()
-			die("no .izumo above %s; create one at your multi-repo root: touch .izumo", wd)
+			return fmt.Errorf("no .izumo above %s; create one at your multi-repo root: touch .izumo", wd)
 		}
 	}
 	var err error
 	if root, err = realPath(r); err != nil || !isFile(path.Join(root, ".izumo")) {
-		die("no .izumo in %s", r)
+		return fmt.Errorf("no .izumo in %s", r)
 	}
 	tasksDir = path.Join(root, "tasks")
 	configFile = path.Join(root, ".izumo")
-	loadConfig()
+	return loadConfig()
 }
 
 // .izumo is bash: variables and hook functions. bash reads it, so roots written for the
 // bash izumo keep working, and the hooks run where they were written to run.
-func loadConfig() {
+func loadConfig() error {
 	if st, err := os.Stat(configFile); err == nil && st.Size() == 0 {
-		return // the common `touch .izumo`: no need to start bash
+		return nil // the common `touch .izumo`: no need to start bash
 	}
-	out, err := bash(`. "$IZUMO_CONFIG" >&2
+	c, err := bash(`. "$IZUMO_CONFIG" >&2
 printf '%s\0' "${BASE-}" "${PROD-}" "${PREFIX-}" "${TASK_TEMPLATE-}"
 declare -F post_add >/dev/null && printf post_add; printf '\0'
-declare -F pre_remove >/dev/null && printf pre_remove; printf '\0'`).Output()
+declare -F pre_remove >/dev/null && printf pre_remove; printf '\0'`)
+	if err != nil {
+		return err
+	}
+	out, err := c.Output()
 	f := strings.Split(string(out), "\x00")
 	if err != nil || len(f) < 6 {
-		die("could not read %s", configFile)
+		return fmt.Errorf("could not read %s", configFile)
 	}
 	cfgBase, cfgProd, cfgPrefix, cfgTemplate = f[0], f[1], f[2], f[3]
 	hasPostAdd, hasPreRemove = f[4] != "", f[5] != ""
-	if cfgTemplate != "" && !strings.HasPrefix(cfgTemplate, "/") && !(len(cfgTemplate) > 1 && cfgTemplate[1] == ':') {
+	if cfgTemplate != "" && !isAbs(cfgTemplate) {
 		cfgTemplate = path.Join(root, cfgTemplate)
 	}
+	return nil
 }
 
+// isAbs: /x, or C:/x on Windows (path.IsAbs knows only the first)
+func isAbs(p string) bool { return path.IsAbs(p) || len(p) > 1 && p[1] == ':' }
+
 // findBash runs once: ls reaches it from parallel goroutines
-var findBash = sync.OnceValue(func() string {
+var findBash = sync.OnceValues(func() (string, error) {
 	if p := os.Getenv("IZUMO_BASH"); p != "" {
-		return p
+		return p, nil
 	}
 	// on Windows, bash on PATH may be WSL's; Git for Windows ships its own next to git
 	if windows {
@@ -79,24 +89,27 @@ var findBash = sync.OnceValue(func() string {
 			for d := strings.TrimSpace(strings.ReplaceAll(string(out), `\`, "/")); path.Dir(d) != d; d = path.Dir(d) {
 				for _, c := range []string{"bin/bash.exe", "usr/bin/bash.exe"} {
 					if isFile(path.Join(d, c)) {
-						return path.Join(d, c)
+						return path.Join(d, c), nil
 					}
 				}
 			}
 		}
 	}
-	p, err := exec.LookPath("bash")
-	if err != nil {
-		die("bash not found: izumo reads .izumo with it (set IZUMO_BASH to its path)")
+	if p, err := exec.LookPath("bash"); err == nil {
+		return p, nil
 	}
-	return p
+	return "", errors.New("bash not found: izumo reads .izumo with it (set IZUMO_BASH to its path)")
 })
 
-// bash runs a script with the root's variables in the environment and $1... set to args
-func bash(script string, args ...string) *exec.Cmd {
-	c := exec.Command(findBash(), append([]string{"-c", script, "izumo"}, args...)...)
+// bash: a script run with the root's variables in the environment and $1... set to args
+func bash(script string, args ...string) (*exec.Cmd, error) {
+	b, err := findBash()
+	if err != nil {
+		return nil, err
+	}
+	c := exec.Command(b, append([]string{"-c", script, "izumo"}, args...)...)
 	c.Env = append(os.Environ(), "IZUMO_CONFIG="+configFile, "ROOT="+root, "TASKS="+tasksDir)
-	return c
+	return c, nil
 }
 
 // inWt runs a command (a hook, or any command) inside the worktree with .izumo loaded
@@ -104,7 +117,10 @@ func bash(script string, args ...string) *exec.Cmd {
 func inWt(task, repo string, stdout io.Writer, argv ...string) error {
 	wt := path.Join(tasksDir, task, repo)
 	branch, _ := gitOut(wt, "branch", "--show-current")
-	c := bash(`post_add() { :; }; pre_remove() { :; }; . "$IZUMO_CONFIG"; "$@"`, argv...)
+	c, err := bash(`post_add() { :; }; pre_remove() { :; }; . "$IZUMO_CONFIG"; "$@"`, argv...)
+	if err != nil {
+		return err
+	}
 	c.Dir = wt
 	c.Env = append(c.Env, "TASK="+task, "REPO="+repo, "SRC="+path.Join(root, repo), "WT="+wt, "BRANCH="+branch)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, stdout, os.Stderr

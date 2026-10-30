@@ -21,7 +21,7 @@ func TestPlace(t *testing.T) {
 	for _, c := range cases {
 		wts := map[string]string{}
 		for _, tr := range []string{"feat/web", "feat/api"} {
-			wts[normPath(tr, c.fold)] = tr
+			wts[normFold(tr, c.fold)] = tr
 		}
 		if got, _ := place(c.tasks, wts, c.cwd, c.cmdline, c.fold); got != c.want {
 			t.Errorf("%s: place(%q, %q) = %q, want %q", c.name, c.cwd, c.cmdline, got, c.want)

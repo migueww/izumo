@@ -3,9 +3,9 @@ package main
 import (
 	"fmt"
 	"path"
-	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	psnet "github.com/shirou/gopsutil/v4/net"
@@ -21,22 +21,20 @@ type server struct {
 	task, repo string
 }
 
-func (s server) portList() string {
-	p := make([]string, len(s.ports))
-	for i, v := range s.ports {
+func portList(ports []uint32) string {
+	p := make([]string, len(ports))
+	for i, v := range ports {
 		p[i] = fmt.Sprint(v)
 	}
 	return strings.Join(p, ",")
 }
 
-// fold: paths compare without case where the file system does, on Windows and macOS
-var fold = runtime.GOOS == "windows" || runtime.GOOS == "darwin"
-
-func servers() []server {
+// servers scans once per run: a done sweep asks about each task from the same scan
+var servers = sync.OnceValue(func() []server {
 	wts := map[string]string{} // task/repo as compared -> task/repo
 	for _, t := range subdirs(tasksDir) {
 		for _, r := range worktrees(t) {
-			wts[normPath(t+"/"+r, fold)] = t + "/" + r
+			wts[normPath(t+"/"+r)] = t + "/" + r
 		}
 	}
 	if len(wts) == 0 {
@@ -72,21 +70,32 @@ func servers() []server {
 	}
 	slices.SortFunc(out, func(a, b server) int { return int(a.pid - b.pid) })
 	return out
+})
+
+// serversIn: the servers running from a task, or from one repo of it
+func serversIn(t, repo string) []server {
+	var out []server
+	for _, s := range servers() {
+		if s.task == t && (repo == "" || s.repo == repo) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
-func normPath(s string, fold bool) string {
-	s = strings.ReplaceAll(s, `\`, "/")
-	if fold {
-		s = strings.ToLower(s)
+func describe(srv []server) string {
+	l := make([]string, len(srv))
+	for i, s := range srv {
+		l[i] = fmt.Sprintf("%s on :%s in %s (pid %d)", s.name, strings.ReplaceAll(portList(s.ports), ",", " :"), s.repo, s.pid)
 	}
-	return s
+	return strings.Join(l, ", ")
 }
 
 // place finds the worktree a process runs from: its folder, or a path in its command line that
 // starts an argument (a dev server run from node_modules, --dir=...). A file in the task folder
 // itself (its workspace, open in an editor) is no worktree.
 func place(tasks string, wts map[string]string, cwd, cmdline string, fold bool) (string, bool) {
-	dir := normPath(tasks, fold) + "/"
+	dir := normFold(tasks, fold) + "/"
 	worktree := func(rest string) (string, bool) {
 		if j := strings.IndexAny(rest, " \"'"); j >= 0 {
 			rest = rest[:j]
@@ -98,12 +107,12 @@ func place(tasks string, wts map[string]string, cwd, cmdline string, fold bool) 
 		tr, ok := wts[p[0]+"/"+p[1]]
 		return tr, ok
 	}
-	if c := normPath(cwd, fold) + "/"; strings.HasPrefix(c, dir) {
+	if c := normFold(cwd, fold) + "/"; strings.HasPrefix(c, dir) {
 		if tr, ok := worktree(c[len(dir):]); ok {
 			return tr, true
 		}
 	}
-	s := normPath(cmdline, fold)
+	s := normFold(cmdline, fold)
 	for i := 0; ; {
 		j := strings.Index(s[i:], dir)
 		if j < 0 {
