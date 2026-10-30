@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path"
@@ -27,34 +28,57 @@ func parallel[T any](n int, f func(int) T) []T {
 	return out
 }
 
-func cmdLs(args []string) {
-	jsonOut, doFetch := false, false
-	var names []string
-	for _, a := range args {
-		switch {
-		case a == "--json":
-			jsonOut = true
-		case a == "--fetch":
-			doFetch = true
-		case strings.HasPrefix(a, "-"):
-			die("unknown flag %s", a)
-		default:
-			names = append(names, a)
-		}
+// what ls --json prints, and the text output reads
+type lsTask struct {
+	Task     string   `json:"task"`
+	Path     string   `json:"path"`
+	Goal     string   `json:"goal"`
+	Ready    bool     `json:"ready"` // done would take it
+	Removing bool     `json:"removing"`
+	Agent    *agent   `json:"agent"`
+	Repos    []lsRepo `json:"repos"`
+}
+
+type agent struct {
+	State string `json:"state"`
+	Since int64  `json:"since"`
+}
+
+type lsRepo struct {
+	Repo      string   `json:"repo"`
+	Branch    string   `json:"branch"`
+	Stage     stage    `json:"stage"`
+	Dirty     bool     `json:"dirty"`
+	Modified  int      `json:"modified"`
+	Untracked int      `json:"untracked"`
+	Unpushed  int      `json:"unpushed"`
+	PR        string   `json:"pr"`
+	Review    string   `json:"review"`
+	CI        string   `json:"ci"`
+	Serving   []uint32 `json:"serving"`
+}
+
+func cmdLs(args []string) error {
+	o, err := parseFlags(args, nil, []string{"--json", "--fetch"})
+	if err != nil {
+		return err
 	}
+	names := o.args
 	if len(names) == 0 {
 		names = allTasks()
 	}
-	tasks := make([]task, len(names))
 	type job struct {
 		t    task
 		repo string
 	}
 	var jobs []job
-	seen := map[string]bool{}
 	var clones []string
+	seen := map[string]bool{}
+	tasks := make([]task, len(names))
 	for i, n := range names {
-		tasks[i] = loadTask(n)
+		if tasks[i], err = loadTask(n); err != nil {
+			return err
+		}
 		for _, r := range worktrees(n) {
 			jobs = append(jobs, job{tasks[i], r})
 			if !seen[r] {
@@ -63,125 +87,98 @@ func cmdLs(args []string) {
 			}
 		}
 	}
-
-	if doFetch {
-		var wg sync.WaitGroup
-		for _, r := range clones {
-			wg.Add(1)
-			go func() { defer wg.Done(); fetch(path.Join(root, r)) }()
-		}
-		wg.Wait()
+	if o.has("--fetch") {
+		fetchAll(clones)
 	}
 
-	var srv []server
-	srvDone := make(chan struct{})
+	srvc := make(chan []server, 1)
 	go func() {
-		if len(jobs) > 0 {
-			srv = servers()
+		if len(jobs) == 0 {
+			srvc <- nil
+			return
 		}
-		close(srvDone)
+		srvc <- servers()
 	}()
 	states := parallel(len(jobs), func(i int) repoState {
 		s, err := stateOf(jobs[i].t, jobs[i].repo)
 		if err != nil {
 			say("%v", err)
-			return repoState{branch: "?", stage: "error"}
+			return repoState{branch: "?", stage: stageError}
 		}
 		return s
 	})
-	<-srvDone
-	stateOfJob := map[string]repoState{}
-	for i, j := range jobs {
-		stateOfJob[j.t.name+"/"+j.repo] = states[i]
-	}
+	srv := <-srvc
 
-	if jsonOut {
-		fmt.Print("[")
-	}
-	tsep := ""
+	list := make([]lsTask, 0, len(tasks))
+	k := 0
 	for _, t := range tasks {
-		state, since := agentOf(t.name)
-		removing := exists(path.Join(tasksDir, t.name, ".removing"))
-		// repos first: the header says whether done would take the task
-		var lines strings.Builder
-		rsep, shipped, ready := "", false, true
+		lt := lsTask{Task: t.name, Path: path.Join(tasksDir, t.name), Goal: goal(t.name), Repos: []lsRepo{},
+			Removing: exists(path.Join(tasksDir, t.name, ".removing")), Agent: agentOf(t.name)}
+		shipped, ready := false, true
 		for _, r := range worktrees(t.name) {
-			s := stateOfJob[t.name+"/"+r]
-			var ports []string
+			s := states[k]
+			k++
+			lr := lsRepo{Repo: r, Branch: s.branch, Stage: s.stage, Dirty: s.dirty(), Modified: s.modified,
+				Untracked: s.untracked, Unpushed: s.unpushed, PR: s.pr, Review: s.review, CI: s.ci, Serving: []uint32{}}
 			for _, v := range srv {
 				if v.task == t.name && v.repo == r {
-					ports = append(ports, v.portList())
+					lr.Serving = append(lr.Serving, v.ports...)
 				}
 			}
-			serving := strings.Join(ports, ",")
 			switch s.stage {
-			case "prod":
+			case stageProd:
 				shipped = true
-			case "empty":
+			case stageEmpty:
 			default:
 				ready = false
 			}
 			if s.modified+s.untracked+s.unpushed > 0 {
 				ready = false
 			}
-			if jsonOut {
-				fmt.Fprintf(&lines, "%s\n    { \"repo\": %s, \"branch\": %s, \"stage\": \"%s\", \"dirty\": %t, \"modified\": %d, \"untracked\": %d, \"unpushed\": %d, \"pr\": %s, \"review\": %s, \"ci\": %s, \"serving\": [%s] }",
-					rsep, jsonStr(r), jsonStr(s.branch), s.stage, s.dirty(), s.modified, s.untracked, s.unpushed,
-					jsonStr(s.pr), jsonStr(s.review), jsonStr(s.ci), serving)
-				rsep = ","
-				continue
-			}
-			flags := ""
-			if s.modified > 0 {
-				flags += fmt.Sprintf(" %d-modified", s.modified)
-			}
-			if s.untracked > 0 {
-				flags += fmt.Sprintf(" %d-untracked", s.untracked)
-			}
-			if s.unpushed > 0 {
-				flags += fmt.Sprintf(" %d-unpushed", s.unpushed)
-			}
-			if s.review != "" {
-				flags += " " + s.review
-			}
-			if s.ci != "" {
-				flags += " ci:" + s.ci
-			}
-			if serving != "" {
-				flags += " serving:" + serving
-			}
-			fmt.Fprintf(&lines, "  %-32s %-36s %-6s%s %s\n", r, s.branch, s.stage, flags, s.pr)
+			lt.Repos = append(lt.Repos, lr)
 		}
-		if !shipped || removing {
-			ready = false
-		}
-		if jsonOut {
-			fmt.Printf("%s\n  { \"task\": %s, \"path\": %s, \"goal\": %s, \"ready\": %t, \"removing\": %t, \"agent\": ",
-				tsep, jsonStr(t.name), jsonStr(path.Join(tasksDir, t.name)), jsonStr(goal(t.name)), ready, removing)
-			if state != "" {
-				fmt.Printf("{ \"state\": %s, \"since\": %d }", jsonStr(state), since)
-			} else {
-				fmt.Print("null")
-			}
-			fmt.Printf(", \"repos\": [%s\n  ] }", lines.String())
-			tsep = ","
-			continue
-		}
-		fmt.Print(t.name)
-		if ready {
+		lt.Ready = ready && shipped && !lt.Removing
+		list = append(list, lt)
+	}
+
+	if o.has("--json") {
+		e := json.NewEncoder(os.Stdout)
+		e.SetEscapeHTML(false)
+		e.SetIndent("", "  ")
+		return e.Encode(list)
+	}
+	for _, t := range list {
+		fmt.Print(t.Task)
+		if t.Ready {
 			fmt.Print("  [ready: izumo done]")
 		}
-		if state != "" {
-			fmt.Printf("  [agent %s %s]", state, ago(since))
+		if t.Agent != nil {
+			fmt.Printf("  [agent %s %s]", t.Agent.State, ago(t.Agent.Since))
 		}
-		if removing {
-			fmt.Printf("  [removal stopped halfway: izumo rm %s]", t.name)
+		if t.Removing {
+			fmt.Printf("  [removal stopped halfway: izumo rm %s]", t.Task)
 		}
-		fmt.Printf("  %s\n%s", goal(t.name), lines.String())
+		fmt.Printf("  %s\n", t.Goal)
+		for _, r := range t.Repos {
+			flags := ""
+			for _, f := range [][2]string{{"modified", strconv.Itoa(r.Modified)}, {"untracked", strconv.Itoa(r.Untracked)}, {"unpushed", strconv.Itoa(r.Unpushed)}} {
+				if f[1] != "0" {
+					flags += " " + f[1] + "-" + f[0]
+				}
+			}
+			if r.Review != "" {
+				flags += " " + r.Review
+			}
+			if r.CI != "" {
+				flags += " ci:" + r.CI
+			}
+			if len(r.Serving) > 0 {
+				flags += " serving:" + portList(r.Serving)
+			}
+			fmt.Printf("  %-32s %-36s %-6s%s %s\n", r.Repo, r.Branch, r.Stage, flags, r.PR)
+		}
 	}
-	if jsonOut {
-		fmt.Print("\n]\n")
-	}
+	return nil
 }
 
 // goal: the first section of TASK.md is the goal, whatever its heading
@@ -205,21 +202,21 @@ func goal(t string) string {
 	return ""
 }
 
-// agentOf: what the hook recorded in .agent, empty when nothing
-func agentOf(t string) (string, int64) {
+// agentOf: what the hook recorded in .agent, nil when nothing
+func agentOf(t string) *agent {
 	b, err := os.ReadFile(path.Join(tasksDir, t, ".agent"))
 	if err != nil {
-		return "", 0
+		return nil
 	}
 	f := strings.Fields(string(b))
 	if len(f) < 2 {
-		return "", 0
+		return nil
 	}
 	since, err := strconv.ParseInt(f[1], 10, 64)
 	if err != nil || since < 0 {
-		return "", 0
+		return nil
 	}
-	return f[0], since
+	return &agent{f[0], since}
 }
 
 func ago(since int64) string {

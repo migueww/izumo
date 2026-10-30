@@ -36,10 +36,40 @@ refuses() {  # refuses <expected message> <izumo args...>
 dev() { git -C "$T/dev/a" "$@"; }
 promote() { dev checkout -q main && dev merge -q --no-ff hml -m promote && dev push -q origin main; }
 
-# fake gh: prints whatever the test puts in FAKE_PR
+PY=
+for p in python3 python; do if "$p" -c '' 2>/dev/null; then PY=$p; break; fi; done
+[ -n "$PY" ] || fail "the test needs python"
+# jsays <expected text> <ls args...>: ls --json flattened to one line per task and per repo,
+# as `task key=value...` and `task/repo key=value...`, values in JSON
+jsays() {
+  local msg=$1 out
+  shift
+  out=$("$IZ" ls --json "$@" 2>&1 | "$PY" -c 'import json, sys
+for t in json.load(sys.stdin):
+    print(t["task"], " ".join(k + "=" + json.dumps(v) for k, v in t.items() if k != "repos"))
+    for r in t["repos"]:
+        print(t["task"] + "/" + r["repo"], " ".join(k + "=" + json.dumps(v) for k, v in r.items()))') ||
+    fail "izumo ls --json $*: $out"
+  grep -qF -- "$msg" <<<"$out" || fail "izumo ls --json $*: expected '$msg', got: $out"
+}
+
+# fake gh: prints whatever the test puts in FAKE_PR; a .cmd runs it on Windows, as gh.exe would
 mkdir -p "$T/bin"
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$FAKE_PR"\n' > "$T/bin/gh"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "${FAKE_PR:-[]}"\n' > "$T/bin/gh"
 chmod +x "$T/bin/gh"
+GHFAKE=$T/bin/gh
+case $(uname -s) in MINGW*|MSYS*|CYGWIN*)
+  printf '@"%s" "%s" %%*\r\n' "$(cygpath -w "$(command -v bash)")" "$(cygpath -w "$T/bin/gh")" > "$T/bin/gh.cmd"
+  GHFAKE=$T/bin/gh.cmd;;
+esac
+# pr <url> <state> <merge commit> <head> <review decision> <check conclusion>: gh pr list --json
+pr() {
+  local merge=null checks=
+  if [ -n "$3" ]; then merge="{\"oid\":\"$3\"}"; fi
+  if [ -n "$6" ]; then checks="{\"conclusion\":\"$6\"}"; fi
+  printf '[{"url":"%s","state":"%s","mergeCommit":%s,"headRefOid":"%s","reviewDecision":"%s","statusCheckRollup":[%s]}]' \
+    "$1" "$2" "$merge" "$4" "$5" "$checks"
+}
 
 # two repos with main + hml, cloned into the root
 mkdir -p "$T/remote" "$T/dev" "$T/root"
@@ -81,8 +111,8 @@ says '1-untracked' ls feat-x
 git -C tasks/feat-x/a add f && git -C tasks/feat-x/a commit -qm f
 refuses 'a has 1 unpushed commit(s)' rm feat-x
 git -C tasks/feat-x/a push -q origin feat-x
-says '"repo": "a", "branch": "feat-x", "stage": "wip"' ls --json
-says '"repo": "b", "branch": "feat-x", "stage": "empty"' ls --json
+jsays 'feat-x/a repo="a" branch="feat-x" stage="wip"'
+jsays 'feat-x/b repo="b" branch="feat-x" stage="empty"'
 
 # done waits for prod: merge-commit flow
 dev fetch -q && dev merge -q --no-ff origin/feat-x -m merge && dev push -q origin hml
@@ -90,7 +120,7 @@ refuses 'a is not in prod (base)' done feat-x
 out=$("$IZ" ls feat-x) && ! grep -q 'ready' <<<"$out" || fail "ready before prod: $out"
 promote
 says 'feat-x  [ready: izumo done]' ls --fetch feat-x
-says '"ready": true' ls --json feat-x
+jsays 'ready=true' feat-x
 says 'would remove feat-x' done feat-x --dry-run
 [ -d tasks/feat-x ] || fail "dry-run removed"
 iz done >/dev/null
@@ -104,20 +134,21 @@ iz new feat-y a >/dev/null
 echo y > tasks/feat-y/a/y && git -C tasks/feat-y/a add y && git -C tasks/feat-y/a commit -qm y
 git -C tasks/feat-y/a push -q origin feat-y
 head=$(git -C tasks/feat-y/a rev-parse HEAD)
-FAKE_PR="https://x/pull/1	OPEN	-	$head	CHANGES_REQUESTED	failing" IZUMO_GH="$T/bin/gh" \
+FAKE_PR=$(pr https://x/pull/1 OPEN "" "$head" CHANGES_REQUESTED FAILURE) IZUMO_GH=$GHFAKE \
   says 'pr     changes-requested ci:failing https://x/pull/1' ls feat-y
-FAKE_PR="https://x/pull/1	OPEN	-	$head	-	-" IZUMO_GH="$T/bin/gh" \
-  says '"stage": "pr", "dirty": false, "modified": 0, "untracked": 0, "unpushed": 0, "pr": "https://x/pull/1", "review": "", "ci": ""' ls --json feat-y
+FAKE_PR=$(pr https://x/pull/1 OPEN "" "$head" "" "") IZUMO_GH=$GHFAKE \
+  jsays 'stage="pr" dirty=false modified=0 untracked=0 unpushed=0 pr="https://x/pull/1" review="" ci=""' feat-y
 dev checkout -q hml && dev fetch -q && dev merge -q --squash origin/feat-y >/dev/null && dev commit -qm "y (#1)"
 dev push -q origin hml && dev push -q origin --delete feat-y
 git -C a update-ref -d refs/remotes/origin/feat-y
-export FAKE_PR="https://x/pull/1	MERGED	$(dev rev-parse HEAD)	$head	-	-"
+FAKE_PR=$(pr https://x/pull/1 MERGED "$(dev rev-parse HEAD)" "$head" "" "")
+export FAKE_PR
 refuses 'a has 1 unpushed commit(s)' rm feat-y  # without gh, squashed work looks unpushed
-IZUMO_GH="$T/bin/gh" refuses 'a is not in prod (base)' done feat-y
+IZUMO_GH=$GHFAKE refuses 'a is not in prod (base)' done feat-y
 promote
-IZUMO_GH="$T/bin/gh" says 'base' ls feat-y          # ls reads the last fetch...
-IZUMO_GH="$T/bin/gh" says 'prod' ls --fetch feat-y  # ...unless asked to fetch
-IZUMO_GH="$T/bin/gh" iz done feat-y >/dev/null || fail "squash: done after prod"
+IZUMO_GH=$GHFAKE says 'base' ls feat-y          # ls reads the last fetch...
+IZUMO_GH=$GHFAKE says 'prod' ls --fetch feat-y  # ...unless asked to fetch
+IZUMO_GH=$GHFAKE iz done feat-y >/dev/null || fail "squash: done after prod"
 
 # review: existing remote branch is checked out, never shipped, removed with rm
 git -C "$T/dev/b" checkout -q -b their-pr && git -C "$T/dev/b" commit -q --allow-empty -m pr
@@ -173,7 +204,7 @@ out=$(cd "$T" && "$IZ") && grep -q 'izumo new' <<<"$out" || fail "bare izumo out
 # agent state from the Claude Code hooks: written inside a task, silent anywhere else
 (cd tasks/bare/a && iz _agent waiting)
 says '[agent waiting' ls bare
-says '"agent": { "state": "waiting"' ls bare --json
+jsays 'agent={"state": "waiting"' bare
 (cd "$T" && iz _agent working) || fail "_agent outside a task must exit 0"
 CLAUDE_PROJECT_DIR="$T/root/tasks/bare" iz _agent working
 says '[agent working' ls bare
@@ -306,7 +337,7 @@ iz rm closed --discard >/dev/null 2>&1 || fail "rm closed"
 # a merged PR of an earlier task with the same branch name says nothing about this one
 iz new reused a >/dev/null
 git -C tasks/reused/a commit -q --allow-empty -m r && git -C tasks/reused/a push -q origin reused
-FAKE_PR="https://x/pull/9	MERGED	$(git -C a rev-parse origin/main)	$(git -C a rev-parse origin/main)	-	-" IZUMO_GH="$T/bin/gh" \
+FAKE_PR=$(pr https://x/pull/9 MERGED "$(git -C a rev-parse origin/main)" "$(git -C a rev-parse origin/main)" "" "") IZUMO_GH=$GHFAKE \
   says 'wip' ls reused
 iz rm reused >/dev/null || fail "rm reused"
 
@@ -335,9 +366,6 @@ says 'up to date' pull a
 refuses 'no git clone' pull nope
 
 # servers: done, rm and drop stop the dev servers running from the task, once told to
-PY=
-for p in python3 python; do if "$p" -c '' 2>/dev/null; then PY=$p; break; fi; done
-[ -n "$PY" ] || fail "no python for the server test"
 serve() {  # serve <task> <repo>: a server running from that worktree, like pnpm dev; sets PORT
   PORT=$((20000 + RANDOM % 20000))
   # a bare socket: http.server looks up DNS before listening, which hangs on macOS runners
@@ -348,7 +376,7 @@ serve() {  # serve <task> <repo>: a server running from that worktree, like pnpm
 up() { "$PY" -c "import socket; socket.create_connection(('127.0.0.1', $1), 2)" 2>/dev/null; }
 iz new served a b >/dev/null
 serve served a
-says "\"serving\": [$PORT]" ls served --json
+jsays "serving=[$PORT]" served
 says ":$PORT in a (pid" rm served --dry-run
 refuses 'pass --stop to stop it, or --no-stop' rm served
 up "$PORT" || fail "a refusal stopped the server"

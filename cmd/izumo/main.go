@@ -3,11 +3,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 )
 
@@ -44,80 +46,102 @@ var windows = runtime.GOOS == "windows"
 
 func say(format string, a ...any) { fmt.Fprintf(os.Stderr, "izumo: "+format+"\n", a...) }
 
-func die(format string, a ...any) {
-	say(format, a...)
-	os.Exit(1)
+// errSaid: the command already told why it stopped; exit 1 without saying more
+var errSaid = errors.New("said")
+
+func main() { os.Exit(run(os.Args[1:])) }
+
+var commands = map[string]func([]string) error{
+	"new": cmdNew, "add": cmdAdd, "drop": cmdDrop, "adopt": cmdAdopt, "mv": cmdMv, "base": cmdBase,
+	"ls": cmdLs, "done": cmdDone, "rm": cmdRm, "run": cmdRun, "pull": cmdPull,
 }
 
-func main() {
-	args := os.Args[1:]
+func run(args []string) int {
 	cmd := ""
 	if len(args) > 0 {
-		cmd = args[0]
+		cmd, args = args[0], args[1:]
 	}
 	switch cmd {
-	case "new", "add", "drop", "adopt", "mv", "base", "ls", "done", "rm", "run", "pull":
-		args = args[1:]
 	case "_agent":
-		agentHook(args[1:])
-		return
+		agentHook(args)
+		return 0
 	case "":
-		if os.Getenv("IZUMO_ROOT") == "" {
-			if _, err := findRoot(); err != nil {
-				fmt.Print(usage)
-				return
-			}
+		if _, err := findRoot(); err != nil && os.Getenv("IZUMO_ROOT") == "" {
+			fmt.Print(usage)
+			return 0
 		}
 		cmd = "ls"
 	case "--version":
 		fmt.Println("izumo " + versionString())
-		return
+		return 0
 	case "-h", "--help", "help":
 		fmt.Print(usage)
-		return
-	default:
+		return 0
+	}
+	f, ok := commands[cmd]
+	if !ok {
 		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
+		return 2
 	}
 	// -h anywhere asks for help, except after run, where the rest is the command's own
 	for i, a := range args {
 		if (a == "-h" || a == "--help") && (cmd != "run" || i == 0) {
 			fmt.Print(usage)
-			return
+			return 0
 		}
 	}
-
-	setup()
-	switch cmd {
-	case "new":
-		cmdNew(args)
-	case "add":
-		cmdAdd(args)
-	case "drop":
-		cmdDrop(args)
-	case "adopt":
-		cmdAdopt(args)
-	case "mv":
-		cmdMv(args)
-	case "base":
-		cmdBase(args)
-	case "ls":
-		cmdLs(args)
-	case "done", "rm":
-		os.Exit(cmdRemove(cmd, args))
-	case "run":
-		cmdRun(args)
-	case "pull":
-		cmdPull(args)
+	err := setup()
+	if err == nil {
+		err = f(args)
 	}
+	if err != nil {
+		if !errors.Is(err, errSaid) {
+			say("%v", err)
+		}
+		return 1
+	}
+	return 0
 }
 
-func validName(s string) {
+// opts: the flags a command was given, and its other arguments
+type opts struct {
+	values map[string]string // --task T, and "1" for a flag without value
+	args   []string
+}
+
+func (o opts) has(f string) bool { return o.values[f] != "" }
+
+// parseFlags reads the flags a command accepts, anywhere among its arguments; a valued one takes
+// the next argument
+func parseFlags(args []string, valued, boolean []string) (opts, error) {
+	o := opts{values: map[string]string{}}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case slices.Contains(valued, a):
+			if i+1 >= len(args) {
+				return o, fmt.Errorf("%s needs a value", a)
+			}
+			i++
+			o.values[a] = args[i]
+		case slices.Contains(boolean, a):
+			o.values[a] = "1"
+		case strings.HasPrefix(a, "-"):
+			return o, fmt.Errorf("unknown flag %s", a)
+		default:
+			o.args = append(o.args, a)
+		}
+	}
+	return o, nil
+}
+
+func validName(s string) error {
 	if s == "" || s[0] == '.' || strings.IndexFunc(s, func(r rune) bool {
 		return !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-')
 	}) >= 0 {
-		die("invalid name: '%s'", s)
+		return fmt.Errorf("invalid name: '%s'", s)
 	}
+	return nil
 }
 
 // realPath is pwd -P: absolute, symlinks resolved, forward slashes even on Windows,
@@ -135,24 +159,28 @@ func realPath(p string) (string, error) {
 }
 
 func cwd() string {
-	d, err := os.Getwd()
-	if err != nil {
-		die("can't read the current folder: %v", err)
-	}
+	d, _ := os.Getwd()
 	if r, err := realPath(d); err == nil {
 		return r
 	}
 	return filepath.ToSlash(d)
 }
 
-// under reports whether p is dir or inside it; Windows paths compare without case
-func under(p, dir string) bool {
-	p, dir = p+"/", dir+"/"
-	if windows {
-		p, dir = strings.ToLower(p), strings.ToLower(dir)
+// fold: paths compare without case where the file system does, on Windows and macOS
+var fold = runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+
+func normPath(s string) string { return normFold(s, fold) }
+
+func normFold(s string, fold bool) string {
+	s = strings.ReplaceAll(s, `\`, "/")
+	if fold {
+		s = strings.ToLower(s)
 	}
-	return strings.HasPrefix(p, dir)
+	return s
 }
+
+// under reports whether p is dir or inside it
+func under(p, dir string) bool { return strings.HasPrefix(normPath(p)+"/", normPath(dir)+"/") }
 
 func isFile(p string) bool {
 	st, err := os.Stat(p)
@@ -167,12 +195,4 @@ func isDir(p string) bool {
 func exists(p string) bool {
 	_, err := os.Lstat(p)
 	return err == nil
-}
-
-// flagValue takes the value after a flag like --task, dying when it is missing
-func flagValue(args []string, i int) string {
-	if i+1 >= len(args) {
-		die("%s needs a value", args[i])
-	}
-	return args[i+1]
 }
