@@ -3,7 +3,7 @@
 # https://github.com/migueww/izumo (MIT)
 set -euo pipefail
 
-VERSION=0.9.0
+VERSION=0.9.1
 GH=${IZUMO_GH:-gh}
 
 say() { echo "izumo: $*" >&2; }
@@ -88,7 +88,7 @@ base_ref() {
 # on_origin <clone> <branch>: is origin/<branch> there, fetching once if not?
 on_origin() {
   git -C "$1" show-ref --verify --quiet "refs/remotes/origin/$2" ||
-    { git -C "$1" fetch --quiet origin 2>/dev/null && git -C "$1" show-ref --verify --quiet "refs/remotes/origin/$2"; }
+    { git -C "$1" fetch --quiet --prune origin 2>/dev/null && git -C "$1" show-ref --verify --quiet "refs/remotes/origin/$2"; }
 }
 
 # check_base <branch> <repo...>: a base asked for by name must be on origin in at least one
@@ -207,16 +207,23 @@ pre_remove_ok() {
   if ! $3 && [ -n "$(git -C "$TASKS/$1/$2" status --porcelain)" ]; then say "$1: kept (pre_remove left changes in $2)"; return 1; fi
 }
 
+# not_removing: a removal that stopped halfway lists what it removes; changing the task before it
+# finishes would leave the change out of that list
+not_removing() {
+  [ ! -f "$TASKS/$1/.removing" ] || die "$1: a removal stopped halfway; finish it with izumo rm $1"
+}
+
 add_repos() {
   local task=$1 repo src wt ref
   shift
   load_task "$task"
+  not_removing "$task"
   for repo; do
     valid_name "$repo"
     src=$ROOT/$repo wt=$TASKS/$task/$repo
     [ -d "$src/.git" ] || die "$repo: no git clone at $src"
     [ -e "$wt" ] && die "$repo is already in task '$task'"
-    git -C "$src" fetch --quiet origin || say "$repo: fetch failed, using local refs"
+    git -C "$src" fetch --quiet --prune origin || say "$repo: fetch failed, using local refs"
     if git -C "$src" show-ref --verify --quiet "refs/heads/$T_BRANCH" ||
        git -C "$src" show-ref --verify --quiet "refs/remotes/origin/$T_BRANCH"; then
       # existing branch, local or on origin (git creates the tracking branch)
@@ -243,7 +250,7 @@ PR_JQ='.[0] // empty | (.statusCheckRollup // []) as $c | [
    else "passing" end)
 ] | @tsv'
 
-# sets R_BRANCH R_DIRTY R_MODIFIED R_UNTRACKED R_UNPUSHED R_PR R_REVIEW R_CI
+# sets R_BRANCH R_HEAD R_DIRTY R_MODIFIED R_UNTRACKED R_UNPUSHED R_PR R_REVIEW R_CI
 # and R_STAGE: empty|wip|pr|base|prod|detached
 repo_state() {
   local wt=$TASKS/$1/$2 src=$ROOT/$2 head created base prod line state merge headref review ci
@@ -252,6 +259,7 @@ repo_state() {
   R_DIRTY=false
   if [ $((R_MODIFIED + R_UNTRACKED)) -gt 0 ]; then R_DIRTY=true; fi
   head=$(git -C "$wt" rev-parse HEAD)
+  R_HEAD=$head
   R_UNPUSHED=$(git -C "$wt" rev-list --count HEAD --not --remotes)
   if [ -z "$R_BRANCH" ]; then R_STAGE=detached; return; fi
   # oldest reflog entry = where the branch started; still there means no work on it
@@ -279,6 +287,8 @@ repo_state() {
       esac
       if [ "$ci" != - ]; then R_CI=$ci; fi;;
     MERGED)
+      # gh matches by branch name: an old PR of a reused name, or a fork's, says nothing about this work
+      if [ "$headref" != "$head" ] && ! is_ancestor "$wt" "$head" "$headref"; then R_PR=; return 0; fi
       R_STAGE=base
       if is_ancestor "$wt" "$merge" "$prod"; then R_STAGE=prod; fi
       # squash merge: the branch commits live on in the PR, so nothing is lost
@@ -359,7 +369,9 @@ cmd_adopt() {
     src=$(cd "$abs" && cd "$(git rev-parse --git-common-dir)/.." && pwd -P) || die "$p: can't find its repo"
     [ "$(dirname "$src")" = "$ROOT" ] || die "$p: its repo $src is not a clone in $ROOT"
     repo=$(basename "$src")
-    case $abs in "$TASKS"/*/*) from=${abs#"$TASKS"/}; from=${from%%/*};; *) from=;; esac
+    valid_name "$repo"
+    case $abs in "$TASKS"/*/*) from=${abs#"$TASKS"/}; from=${from%%/*}; not_removing "$from";; *) from=;; esac
+    if [ -f "$TASKS/$task/.task" ]; then not_removing "$task"; fi
     if [ ! -f "$TASKS/$task/.task" ]; then
       br=$(git -C "$abs" branch --show-current)
       create_task "$task" "${br:-$PREFIX$task}" ""
@@ -445,7 +457,7 @@ cmd_ls() {
       for r in $(worktrees "$t"); do
         case $seen in *" $r "*) continue;; esac
         seen="$seen$r "
-        ( git -C "$ROOT/$r" fetch --quiet origin 2>/dev/null || say "$r: fetch failed, using local refs" ) &
+        ( git -C "$ROOT/$r" fetch --quiet --prune origin 2>/dev/null || say "$r: fetch failed, using local refs" ) &
       done
     done
     wait
@@ -539,17 +551,17 @@ in_use() {
   return 1
 }
 
-# procs <pid...>: pid TAB name TAB what places it: its command line, and outside Windows its folder first
+# procs <pid...>: pid TAB name TAB folder TAB command line (no folder on Windows)
 procs() {
   local p f
   if windows; then
     f=$(printf 'ProcessId=%s OR ' "$@")
     powershell.exe -NoProfile -NonInteractive -Command 'Get-CimInstance Win32_Process -Filter "'"${f% OR }"'" |
-      ForEach-Object { "{0}`t{1}`t{2}" -f $_.ProcessId, $_.Name, ($_.CommandLine -replace "[\r\n\t]+", " ") }' 2>/dev/null | tr -d '\r' | sed 's#\\#/#g'
+      ForEach-Object { "{0}`t{1}`t`t{2}" -f $_.ProcessId, $_.Name, ($_.CommandLine -replace "[\r\n\t]+", " ") }' 2>/dev/null | tr -d '\r' | sed 's#\\#/#g'
   else
     for p; do
-      printf '%s\t%s\t%s/ %s\n' "$p" "$(ps -o comm= -p "$p" 2>/dev/null)" \
-        "$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" "$(ps -o args= -p "$p" 2>/dev/null)"
+      printf '%s\t%s\t%s\t%s\n' "$p" "$(ps -o comm= -p "$p" 2>/dev/null)" \
+        "$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" "$(ps -o args= -p "$p" 2>/dev/null | tr '\t' ' ')"
     done
   fi
 }
@@ -559,10 +571,12 @@ procs() {
 # ponytail: on Windows only the command line places a process (dev servers run from node_modules
 # do); one started as `node server.js` from the folder isn't found, and in_use still keeps the task
 servers() {
-  local listen dir=$TASKS wts= d
+  local listen dir=$TASKS wts= d fold=0
   for d in "$TASKS"/*/*/.git; do
     if [ -f "$d" ]; then d=${d%/.git}; wts="$wts${d#"$TASKS"/}"$'\n'; fi
   done
+  # paths compare without case where the file system does
+  case $(uname -s) in MINGW*|MSYS*|CYGWIN*|Darwin) fold=1;; esac
   # listening = remote port 0; netstat's state column is translated, its numbers aren't
   if windows; then
     listen=$(netstat -ano 2>/dev/null | tr -d '\r' | awk '$1 == "TCP" && $3 ~ /:0$/ && $5 + 0 > 4 {n = split($2, a, ":"); print $5, a[n]}')
@@ -572,23 +586,39 @@ servers() {
   fi
   [ -n "$listen" ] || return 0
   # shellcheck disable=SC2046  # pids are numbers
-  procs $(echo "$listen" | awk '{print $1}' | sort -u) | LISTEN=$listen WTS=$wts awk -F'\t' -v dir="$dir/" '
+  procs $(echo "$listen" | awk '{print $1}' | sort -u) | LISTEN=$listen WTS=$wts awk -F'\t' -v dir="$dir/" -v fold=$fold '
+    function norm(s) { gsub(/\\/, "/", s); return fold ? tolower(s) : s }
+    # the worktree a path under dir leads to; a file in the task folder itself (its workspace,
+    # open in an editor) is no worktree
+    function worktree(rest,   p) {
+      sub("[ \"" q "].*", "", rest)
+      split(rest, p, "/")
+      return ((p[1] "/" p[2]) in wts) ? wts[p[1] "/" p[2]] : ""
+    }
     BEGIN {
-      dir = tolower(dir)
+      q = "\047"
+      dir = norm(dir)
       n = split(ENVIRON["WTS"], w, "\n")
-      for (i = 1; i <= n; i++) wts[tolower(w[i])] = 1
+      for (i = 1; i <= n; i++) if (w[i] != "") wts[norm(w[i])] = w[i]
       n = split(ENVIRON["LISTEN"], l, "\n")
       for (i = 1; i <= n; i++) {
         split(l[i], f, " ")
         if (index(ports[f[1]] ",", "," f[2] ",") == 0) ports[f[1]] = ports[f[1]] "," f[2]
       }
     }
-    ($1 in ports) && (i = index(tolower($3), dir)) {
-      rest = substr($3, i + length(dir))
-      sub(/[ "].*/, "", rest)
-      # inside a worktree: a file in the task folder itself (its workspace, open in an editor) is no server
-      split(rest, p, "/")
-      if (!(tolower(p[1] "/" p[2]) in wts)) next
+    $1 in ports {
+      tr = ""
+      # its folder, or a path in its command line that starts an argument (node_modules, --dir=...)
+      c = norm($3) "/"
+      if (index(c, dir) == 1) tr = worktree(substr(c, length(dir) + 1))
+      s = norm($4); off = 0
+      while (tr == "" && (i = index(substr(s, off + 1), dir)) > 0) {
+        at = off + i
+        if (at == 1 || index(" \"=" q, substr(s, at - 1, 1))) tr = worktree(substr(s, at + length(dir)))
+        off = at
+      }
+      if (tr == "") next
+      split(tr, p, "/")
       name = $2; sub(/.*\//, "", name); sub(/\.exe$/, "", name)
       printf "%s\t%s\t%s\t%s\t%s\n", $1, substr(ports[$1], 2), name, p[1], p[2]
     }'
@@ -663,7 +693,7 @@ cmd_drop() {
     wt=$TASKS/$task/$r
     [ -f "$wt/.git" ] || die "$r is not in task '$task'"
     case "$(pwd -P)/" in "$wt"/*) die "$r: you are inside it, cd out first";; esac
-    git -C "$ROOT/$r" fetch --quiet origin 2>/dev/null || say "$r: fetch failed, using local refs"
+    git -C "$ROOT/$r" fetch --quiet --prune origin 2>/dev/null || say "$r: fetch failed, using local refs"
     repo_state "$task" "$r"
     if $R_DIRTY; then die "$r: kept (uncommitted changes: $R_MODIFIED modified, $R_UNTRACKED untracked)"; fi
     if [ "$R_UNPUSHED" -gt 0 ]; then die "$r: kept ($R_UNPUSHED unpushed commit(s))"; fi
@@ -673,22 +703,36 @@ cmd_drop() {
       die "$r: could not remove the worktree (a program has it open?)"
     git -C "$ROOT/$r" worktree prune
     # every commit is on a remote or in a merged PR, so the local branch holds nothing of its own
-    if [ -n "$R_BRANCH" ]; then git -C "$ROOT/$r" branch -D -q "$R_BRANCH" || say "$r: could not delete branch $R_BRANCH"; fi
+    delete_branch "$r" "$R_BRANCH" "$R_HEAD"
     write_workspace "$task"
     echo "dropped $r from $task"
   done
 }
 
+# delete_branch <repo> <branch> <commit>: only while the branch still points where the checks saw
+# it, so a commit made since (an agent in another session, a pre_remove hook) keeps the branch.
+# An empty commit comes from a .removing written before izumo recorded it.
+delete_branch() {
+  local src=$ROOT/$1
+  if [ -z "$2" ] || ! git -C "$src" show-ref --verify --quiet "refs/heads/$2"; then return 0; fi
+  if [ -n "$3" ] && [ "$(git -C "$src" rev-parse "refs/heads/$2")" != "$3" ]; then
+    say "$1: branch $2 moved since the checks, so it stays"
+    return 0
+  fi
+  git -C "$src" branch -D -q "$2" || say "$1: could not delete branch $2"
+}
+
 # done: every repo in prod (or untouched) and nothing would be lost. rm: nothing would be lost.
 # rm --discard: work that would be lost goes to $lost instead of blocking
 remove_task() {
-  local mode=$1 dry=$2 t=$3 discard=$4 dir=$TASKS/$3 r f br why= lost= shipped=false resuming=false force=
+  local mode=$1 dry=$2 t=$3 discard=$4 dir=$TASKS/$3 r f br sha why= lost= shipped=false resuming=false force= checked= arch n
   load_task "$t"
   # an earlier removal stopped halfway: its checks passed back then, so finish what it listed
   if [ -f "$dir/.removing" ]; then resuming=true mode=rm; fi
   for r in $(worktrees "$t"); do
-    git -C "$ROOT/$r" fetch --quiet origin 2>/dev/null || say "$r: fetch failed, using local refs"
+    git -C "$ROOT/$r" fetch --quiet --prune origin 2>/dev/null || say "$r: fetch failed, using local refs"
     repo_state "$t" "$r"
+    checked="$checked$r $R_BRANCH $R_HEAD"$'\n'
     if $R_DIRTY; then lost="$lost; $r has uncommitted changes ($R_MODIFIED modified, $R_UNTRACKED untracked)"; fi
     if [ "$R_UNPUSHED" -gt 0 ]; then lost="$lost; $r has $R_UNPUSHED unpushed commit(s)"; fi
     if [ "$mode" = done ]; then
@@ -724,14 +768,19 @@ remove_task() {
   if ! $resuming; then
     for r in $(worktrees "$t"); do pre_remove_ok "$t" "$r" "$discard" || return 1; done
     if [ -f "$dir/TASK.md" ]; then
-      { mkdir -p "$TASKS/.archive" && cp "$dir/TASK.md" "$TASKS/.archive/$(date +%Y-%m-%d)-$t.md"; } ||
+      arch=$TASKS/.archive/$(date +%Y-%m-%d)-$t
+      n=2
+      if [ -e "$arch.md" ]; then  # the same name removed twice in a day
+        while [ -e "$arch-$n.md" ]; do n=$((n + 1)); done
+        arch=$arch-$n
+      fi
+      { mkdir -p "$TASKS/.archive" && cp "$dir/TASK.md" "$arch.md"; } ||
         die "$t: could not archive TASK.md; nothing removed"
     fi
-    for r in $(worktrees "$t"); do
-      printf '%s %s\n' "$r" "$(git -C "$dir/$r" branch --show-current)"
-    done > "$dir/.removing" || die "$t: could not write $dir/.removing; nothing removed"
+    # each repo's branch and commit as the checks saw them: deleting the branch waits for both
+    printf '%s' "$checked" > "$dir/.removing" || die "$t: could not write $dir/.removing; nothing removed"
   fi
-  while read -r r br <&3; do
+  while read -r r br sha <&3; do
     valid_name "$r"
     if [ -f "$dir/$r/.git" ]; then
       # longpaths: deep node_modules otherwise stop the removal halfway on Windows
@@ -741,9 +790,7 @@ remove_task() {
       rm -rf "${dir:?}/$r" || die "$t: could not remove what is left of $r (a program has it open?); fix that and run the same command to finish"
     fi
     git -C "$ROOT/$r" worktree prune
-    if [ -n "$br" ] && git -C "$ROOT/$r" show-ref --verify --quiet "refs/heads/$br"; then
-      git -C "$ROOT/$r" branch -D -q "$br" || say "$r: could not delete branch $br"
-    fi
+    delete_branch "$r" "$br" "$sha"
   done 3< "$dir/.removing"
   rm -rf "${dir:?}" || die "$t: worktrees and branches are gone, but the folder is in use; delete $dir once nothing has it open"
   echo "removed $t"
