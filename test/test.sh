@@ -113,6 +113,9 @@ refuses 'a has 1 unpushed commit(s)' rm feat-x
 git -C tasks/feat-x/a push -q origin feat-x
 jsays 'feat-x/a repo="a" branch="feat-x" stage="wip"'
 jsays 'feat-x/b repo="b" branch="feat-x" stage="empty"'
+# colors only when asked (the shim asks on a terminal), and NO_COLOR wins
+out=$(IZUMO_COLOR=1 "$IZ" ls feat-x) && grep -qF $'\e[33mwip' <<<"$out" || fail "no color with IZUMO_COLOR=1: $out"
+out=$(IZUMO_COLOR=1 NO_COLOR=1 "$IZ" ls feat-x) && ! grep -qF $'\e[' <<<"$out" || fail "color despite NO_COLOR: $out"
 
 # done waits for prod: merge-commit flow
 dev fetch -q && dev merge -q --no-ff origin/feat-x -m merge && dev push -q origin hml

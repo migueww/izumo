@@ -147,35 +147,38 @@ func cmdLs(args []string) error {
 		e.SetIndent("", "  ")
 		return e.Encode(list)
 	}
+	agentColor := map[string]string{"working": cyan, "waiting": yellow, "done": dim}
 	for _, t := range list {
-		fmt.Print(t.Task)
+		fmt.Print(paint(bold, t.Task))
 		if t.Ready {
-			fmt.Print("  [ready: izumo done]")
+			fmt.Print("  " + paint(green, "[ready: izumo done]"))
 		}
 		if t.Agent != nil {
-			fmt.Printf("  [agent %s %s]", t.Agent.State, ago(t.Agent.Since))
+			fmt.Print("  " + paint(agentColor[t.Agent.State], fmt.Sprintf("[agent %s %s]", t.Agent.State, ago(t.Agent.Since))))
 		}
 		if t.Removing {
-			fmt.Printf("  [removal stopped halfway: izumo rm %s]", t.Task)
+			fmt.Print("  " + paint(red, fmt.Sprintf("[removal stopped halfway: izumo rm %s]", t.Task)))
 		}
 		fmt.Printf("  %s\n", t.Goal)
 		for _, r := range t.Repos {
 			flags := ""
 			for _, f := range [][2]string{{"modified", strconv.Itoa(r.Modified)}, {"untracked", strconv.Itoa(r.Untracked)}, {"unpushed", strconv.Itoa(r.Unpushed)}} {
 				if f[1] != "0" {
-					flags += " " + f[1] + "-" + f[0]
+					flags += " " + paint(flagColor[f[0]], f[1]+"-"+f[0])
 				}
 			}
 			if r.Review != "" {
-				flags += " " + r.Review
+				flags += " " + paint(flagColor[r.Review], r.Review)
 			}
 			if r.CI != "" {
-				flags += " ci:" + r.CI
+				flags += " " + paint(flagColor["ci:"+r.CI], "ci:"+r.CI)
 			}
 			if len(r.Serving) > 0 {
-				flags += " serving:" + portList(r.Serving)
+				flags += " " + paint(cyan, "serving:"+portList(r.Serving))
 			}
-			fmt.Printf("  %-32s %-36s %-6s%s %s\n", r.Repo, r.Branch, r.Stage, flags, r.PR)
+			// padded before painting, so the columns line up with or without color
+			fmt.Printf("  %s %s %s%s %s\n", fmt.Sprintf("%-32s", r.Repo), paint(dim, fmt.Sprintf("%-36s", r.Branch)),
+				paint(stageColor[r.Stage], fmt.Sprintf("%-6s", r.Stage)), flags, paint(dim, r.PR))
 		}
 	}
 	return nil

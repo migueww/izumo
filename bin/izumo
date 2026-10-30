@@ -9,8 +9,10 @@ RELEASES=${IZUMO_RELEASES:-https://github.com/migueww/izumo/releases/download}
 
 # the binary reads .izumo with bash: this one, not whatever bash PATH holds (WSL's, on Windows)
 export IZUMO_BASH=$BASH
-# under Git Bash's terminal the binary sees a pipe, so tell it when someone can answer
+# under Git Bash's terminal the binary sees pipes, so tell it when someone can answer, and
+# when its output reaches a terminal that shows colors
 if [ -t 0 ]; then export IZUMO_TTY=1; else export IZUMO_TTY=0; fi
+if [ -t 1 ] && [ -z "${IZUMO_COLOR:-}" ]; then export IZUMO_COLOR=1; fi
 
 case $(uname -s) in
   Linux) os=linux;;
