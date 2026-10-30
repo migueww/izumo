@@ -1,4 +1,6 @@
-# izumo
+<p align="center"><img src="docs/icon.svg" width="112" alt=""></p>
+
+<h1 align="center">izumo</h1>
 
 **One folder per task, one git worktree per repo.** For people (and agents) who work
 across many repos at once, and whose tasks grow mid-way: you start in two services,
