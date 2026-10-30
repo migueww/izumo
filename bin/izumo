@@ -559,8 +559,10 @@ procs() {
     powershell.exe -NoProfile -NonInteractive -Command 'Get-CimInstance Win32_Process -Filter "'"${f% OR }"'" |
       ForEach-Object { "{0}`t{1}`t`t{2}" -f $_.ProcessId, $_.Name, ($_.CommandLine -replace "[\r\n\t]+", " ") }' 2>/dev/null | tr -d '\r' | sed 's#\\#/#g'
   else
+    # named by the program it runs (its first argument): ps's comm is the main thread's name,
+    # which node renames to node-MainThread on Linux
     for p; do
-      printf '%s\t%s\t%s\t%s\n' "$p" "$(ps -o comm= -p "$p" 2>/dev/null)" \
+      printf '%s\t%s\t%s\t%s\n' "$p" "$(ps -o args= -p "$p" 2>/dev/null | awk '{print $1}')" \
         "$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" "$(ps -o args= -p "$p" 2>/dev/null | tr '\t' ' ')"
     done
   fi
