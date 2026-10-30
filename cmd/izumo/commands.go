@@ -6,10 +6,13 @@ import (
 	"io"
 	"os"
 	"path"
+	"slices"
 	"strings"
 )
 
-func addRepos(name string, repos []string, out io.Writer) error {
+// addRepos puts repos in a task: on the task's branch, or with ref, detached on the base to be
+// read. Adding a repo the task only read turns it into one it works on.
+func addRepos(name string, repos []string, ref bool, out io.Writer) error {
 	t, err := loadTask(name)
 	if err != nil {
 		return err
@@ -25,33 +28,61 @@ func addRepos(name string, repos []string, out io.Writer) error {
 		if !isDir(path.Join(src, ".git")) {
 			return fmt.Errorf("%s: no git clone at %s", repo, src)
 		}
-		if exists(wt) {
+		growing := exists(wt) && t.isRef(repo) && !ref
+		if exists(wt) && !growing {
 			return fmt.Errorf("%s is already in task '%s'", repo, name)
 		}
 		fetch(src)
-		if hasRef(src, "refs/heads/"+t.branch) || originOf(src).branches[t.branch] {
+		// where new work (or a reference) starts: only asked for when there is no branch to use
+		start := func() (string, error) {
+			base, err := baseRef(src, t.base)
+			if err != nil {
+				return "", err
+			}
+			if t.base != "" && base != "origin/"+t.base {
+				say("%s: no origin/%s, starting from %s", repo, t.base, base)
+			}
+			if !gitOK(src, "rev-parse", "--verify", "--quiet", base+"^{commit}") {
+				return "", fmt.Errorf("%s: no %s", repo, base)
+			}
+			return base, nil
+		}
+		branchExists := hasRef(src, "refs/heads/"+t.branch) || originOf(src).branches[t.branch]
+		var base string
+		if ref || !branchExists {
+			if base, err = start(); err != nil {
+				return err
+			}
+		}
+		switch {
+		case ref:
+			err = gitRun(src, "worktree", "add", "--quiet", "--detach", wt, base)
+			t.refs = append(t.refs, repo)
+		case growing:
+			// the reference becomes work: onto the task's branch, keeping whatever was edited
+			if branchExists {
+				err = gitRun(wt, "switch", "--quiet", t.branch)
+			} else {
+				err = gitRun(wt, "switch", "--quiet", "--no-track", "-c", t.branch, base)
+			}
+			t.refs = slices.DeleteFunc(t.refs, func(r string) bool { return r == repo })
+		case branchExists:
 			// existing branch, local or on origin (git creates the tracking branch)
 			err = gitRun(src, "worktree", "add", "--quiet", wt, t.branch)
-		} else {
-			ref, e := baseRef(src, t.base)
-			if e != nil {
-				return e
-			}
-			if t.base != "" && ref != "origin/"+t.base {
-				say("%s: no origin/%s, starting from %s", repo, t.base, ref)
-			}
-			if !gitOK(src, "rev-parse", "--verify", "--quiet", ref+"^{commit}") {
-				return fmt.Errorf("%s: no %s", repo, ref)
-			}
-			err = gitRun(src, "worktree", "add", "--quiet", "--no-track", "-b", t.branch, wt, ref)
+		default:
+			err = gitRun(src, "worktree", "add", "--quiet", "--no-track", "-b", t.branch, wt, base)
 		}
 		if err != nil {
 			return errSaid // git said why
 		}
+		if err := saveTask(t); err != nil {
+			return err
+		}
 		if err := writeWorkspace(name); err != nil {
 			return err
 		}
-		if hook("post_add", name, repo, out) != nil {
+		// a reference is there to be read: nothing to install
+		if !ref && hook("post_add", name, repo, out) != nil {
 			say("%s: post_add hook failed (worktree kept)", repo)
 		}
 		fmt.Fprintln(out, wt)
@@ -79,11 +110,11 @@ func cmdNew(args []string) error {
 	if branch == "" {
 		branch = cfgPrefix + name
 	}
-	if err := createTask(task{name, branch, base}); err != nil {
+	if err := createTask(task{name: name, branch: branch, base: base}); err != nil {
 		return err
 	}
 	if len(repos) > 0 {
-		if err := addRepos(name, repos, io.Discard); err != nil {
+		if err := addRepos(name, repos, false, io.Discard); err != nil {
 			return err
 		}
 	}
@@ -92,18 +123,18 @@ func cmdNew(args []string) error {
 }
 
 func cmdAdd(args []string) error {
-	o, err := parseFlags(args, []string{"--task"}, nil)
+	o, err := parseFlags(args, []string{"--task"}, []string{"--ref"})
 	if err != nil {
 		return err
 	}
 	if len(o.args) == 0 {
-		return errors.New("usage: izumo add <repo...> [--task T]")
+		return errors.New("usage: izumo add <repo...> [--task T] [--ref]")
 	}
 	name, err := taskFromCwd(o.values["--task"])
 	if err != nil {
 		return err
 	}
-	return addRepos(name, o.args, os.Stdout)
+	return addRepos(name, o.args, o.has("--ref"), os.Stdout)
 }
 
 // adopt moves worktrees made by hand (or by another tool) into a task, creating it if needed
@@ -175,7 +206,7 @@ func adopt(p, name string) error {
 		if br == "" {
 			br = cfgPrefix + name
 		}
-		if err := createTask(task{name, br, ""}); err != nil {
+		if err := createTask(task{name: name, branch: br}); err != nil {
 			return err
 		}
 	}
@@ -185,6 +216,23 @@ func adopt(p, name string) error {
 	}
 	if gitRun(src, "worktree", "move", abs, dest) != nil {
 		return fmt.Errorf("%s: git could not move it (locked or has submodules?)", p)
+	}
+	// a reference stays one in the task it moves to
+	if from != "" {
+		if ft, err := loadTask(from); err == nil && ft.isRef(repo) {
+			ft.refs = slices.DeleteFunc(ft.refs, func(r string) bool { return r == repo })
+			tt, err := loadTask(name)
+			if err != nil {
+				return err
+			}
+			tt.refs = append(tt.refs, repo)
+			if err := saveTask(ft); err != nil {
+				return err
+			}
+			if err := saveTask(tt); err != nil {
+				return err
+			}
+		}
 	}
 	if err := writeWorkspace(name); err != nil {
 		return err
@@ -290,9 +338,38 @@ func cmdBase(args []string) error {
 			ref, _ := baseRef(path.Join(root, r), branch)
 			say("%s: no origin/%s, uses %s", r, branch, ref)
 		}
+		if t.isRef(r) {
+			if msg := moveRef(t, r); !strings.HasPrefix(msg, "moved") && msg != "up to date" {
+				say("%s (ref): %s", r, msg)
+			}
+		}
 	}
 	fmt.Printf("%s: base %s\n", t.name, branch)
 	return nil
+}
+
+// moveRef puts a reference on its task's base as origin last had it. One someone edited, or
+// committed on, stays where it is: moving it would lose that.
+func moveRef(t task, repo string) string {
+	wt, src := path.Join(tasksDir, t.name, repo), path.Join(root, repo)
+	if st, _ := gitOut(wt, "status", "--porcelain"); st != "" {
+		return "has changes, left as is"
+	}
+	if n, _ := gitOut(wt, "rev-list", "--count", "HEAD", "--not", "--remotes"); n != "0" {
+		return "has commits of its own, left as is"
+	}
+	base, err := baseRef(src, t.base)
+	if err != nil {
+		return err.Error()
+	}
+	head, _ := gitOut(wt, "rev-parse", "HEAD")
+	if target, _ := gitOut(src, "rev-parse", base); head == target {
+		return "up to date"
+	}
+	if !gitOK(wt, "checkout", "--quiet", "--detach", base) {
+		return "could not move to " + base
+	}
+	return "moved to " + base
 }
 
 // run: one command in each repo of a task, in order; fails if it failed in any.
@@ -325,6 +402,9 @@ func cmdRun(args []string) error {
 	}
 	var failed []string
 	for _, r := range worktrees(t.name) {
+		if t.isRef(r) { // there to be read: tests and builds belong to the repos the task changes
+			continue
+		}
 		fmt.Println("== " + r)
 		if inWt(t.name, r, os.Stdout, args...) != nil {
 			failed = append(failed, r)
@@ -370,7 +450,8 @@ func pullOne(repo string) string {
 	return "updated " + br
 }
 
-// pull brings the root's clones up to date, so code read there is current
+// pull brings the root's clones up to date, and the tasks' references to their base, so code
+// read there is current
 func cmdPull(repos []string) error {
 	for _, r := range repos {
 		if err := validName(r); err != nil {
@@ -384,13 +465,27 @@ func cmdPull(repos []string) error {
 		repos = allClones()
 	}
 	res := parallel(len(repos), func(i int) string { return pullOne(repos[i]) })
-	w, failed := 0, false
-	for _, r := range repos {
-		w = max(w, len(r))
+	names, failed := append([]string{}, repos...), false
+	for _, r := range res {
+		failed = failed || r == "fetch failed"
 	}
-	for i, r := range repos {
-		fmt.Printf("%-*s  %s\n", w, r, res[i])
-		failed = failed || res[i] == "fetch failed"
+	for _, name := range allTasks() {
+		t, err := loadTask(name)
+		if err != nil {
+			continue
+		}
+		for _, r := range t.refs {
+			if slices.Contains(repos, r) && isFile(path.Join(tasksDir, name, r, ".git")) {
+				names, res = append(names, name+"/"+r+" (ref)"), append(res, moveRef(t, r))
+			}
+		}
+	}
+	w := 0
+	for _, n := range names {
+		w = max(w, len(n))
+	}
+	for i, n := range names {
+		fmt.Printf("%-*s  %s\n", w, n, res[i])
 	}
 	if failed {
 		return errSaid

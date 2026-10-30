@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -206,6 +207,12 @@ func drop(t task, r string, stop stopMode) error {
 	gitOK(path.Join(root, r), "worktree", "prune")
 	// every commit is on a remote or in a merged PR, so the local branch holds nothing of its own
 	deleteBranch(r, s.branch, s.head)
+	if t.isRef(r) {
+		t.refs = slices.DeleteFunc(t.refs, func(x string) bool { return x == r })
+		if err := saveTask(t); err != nil {
+			return err
+		}
+	}
 	if err := writeWorkspace(t.name); err != nil {
 		return err
 	}
@@ -300,7 +307,7 @@ func planRemoval(mode string, t task, discard bool) (*removal, error) {
 			switch s.stage {
 			case stageProd:
 				shipped = true
-			case stageEmpty:
+			case stageEmpty, stageRef: // nothing to ship
 			default:
 				p.why = append(p.why, fmt.Sprintf("%s is not in prod (%s)", r, s.stage))
 			}

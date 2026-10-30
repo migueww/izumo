@@ -6,11 +6,17 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 )
 
-// task: tasks/<name>/.task holds its branch and base
-type task struct{ name, branch, base string }
+// task: tasks/<name>/.task holds its branch, its base and the repos it only reads (refs)
+type task struct {
+	name, branch, base string
+	refs               []string // worktrees detached on the base, there to be read, never to ship
+}
+
+func (t task) isRef(repo string) bool { return slices.Contains(t.refs, repo) }
 
 func loadTask(name string) (task, error) {
 	if err := validName(name); err != nil {
@@ -28,6 +34,8 @@ func loadTask(name string) (task, error) {
 			t.branch = unquote(v)
 		case "T_BASE":
 			t.base = unquote(v)
+		case "T_REFS":
+			t.refs = strings.Fields(unquote(v))
 		}
 	}
 	return t, nil
@@ -59,6 +67,9 @@ func shellQuote(v string) string {
 
 func saveTask(t task) error {
 	s := fmt.Sprintf("T_BRANCH=%s\nT_BASE=%s\n", shellQuote(t.branch), shellQuote(t.base))
+	if len(t.refs) > 0 {
+		s += fmt.Sprintf("T_REFS=%s\n", shellQuote(strings.Join(t.refs, " ")))
+	}
 	if err := os.WriteFile(path.Join(tasksDir, t.name, ".task"), []byte(s), 0o644); err != nil {
 		return fmt.Errorf("could not write %s/.task: %v", t.name, err)
 	}
@@ -146,9 +157,16 @@ func writeWorkspace(t string) error {
 	ws := struct {
 		Folders []folder `json:"folders"`
 	}{Folders: []folder{}}
+	tk, err := loadTask(t)
+	if err != nil {
+		return err
+	}
 	for _, r := range worktrees(t) {
-		br, _ := gitOut(path.Join(tasksDir, t, r), "branch", "--show-current")
-		ws.Folders = append(ws.Folders, folder{r + " (" + br + ")", r})
+		label := "ref"
+		if !tk.isRef(r) {
+			label, _ = gitOut(path.Join(tasksDir, t, r), "branch", "--show-current")
+		}
+		ws.Folders = append(ws.Folders, folder{r + " (" + label + ")", r})
 	}
 	if err := writeJSON(path.Join(tasksDir, t, t+".code-workspace"), ws); err != nil {
 		return fmt.Errorf("could not write the workspace of %s: %v", t, err)
@@ -160,8 +178,9 @@ const agentsMD = "This folder is an izumo task: each subfolder is a git worktree
 	"the task's branch. Read TASK.md first and keep it current. It holds only what git\n" +
 	"can't tell: goal, status / next step, decisions and open items. Repos, branches and\n" +
 	"PR state come from `izumo ls <task>`, so never write them here: the next step is the\n" +
-	"next thing a person does. Need another repo? Run `izumo add <repo>` from here;\n" +
-	"one no longer needed? `izumo drop <repo>`.\n"
+	"next thing a person does. Need another repo? Run `izumo add <repo>` from here, or\n" +
+	"`izumo add <repo> --ref` for one you only read (never edit a ref); one no longer\n" +
+	"needed? `izumo drop <repo>`.\n"
 
 func createTask(t task) error {
 	dir := path.Join(tasksDir, t.name)

@@ -11,9 +11,13 @@ must be on PATH; if it is missing, point the user to https://github.com/migueww/
 ## Rules
 
 - **Never edit the source clones** at the root. All work happens in `tasks/<task>/<repo>`.
-  Before reading code in a root clone (another service's contract, a grep across repos),
-  run `izumo pull <repo>` so you don't read stale code; if it says the clone is on some
-  other branch, tell the user what you read may not be the base branch.
+- **A repo the task only reads** (the back end whose payload the front needs, another
+  service's contract): `izumo add <repo> --ref` from inside the task folder. It lands in
+  the task, detached on the task's base, without a branch; never edit it. Run `izumo pull
+  <repo>` before reading it again later, so you don't read stale code. If the task turns
+  out to change it, `izumo add <repo>` (no `--ref`) turns it into a worktree on the task's
+  branch. Outside a task, read the root clone after `izumo pull <repo>`; if that says the
+  clone is on some other branch, tell the user what you read may not be the base branch.
 - **Starting work:** `izumo new <task> <repos...>`, with `--branch` when the user or the
   team convention names the branch. Write the user's request into the first section of
   `TASK.md` (the goal; the root's template may name its sections in another language)

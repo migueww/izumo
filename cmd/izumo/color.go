@@ -39,7 +39,7 @@ func paint(code, s string) string {
 
 // how far a repo's work went, at a glance: shipped green, waiting on review blue, not started dim
 var stageColor = map[stage]string{
-	stageEmpty: dim, stageWip: yellow, stagePR: blue, stageBase: magenta, stageProd: green,
+	stageEmpty: dim, stageRef: dim, stageWip: yellow, stagePR: blue, stageBase: magenta, stageProd: green,
 	stageDetached: red, stageError: red,
 }
 

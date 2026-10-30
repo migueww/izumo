@@ -144,6 +144,7 @@ const (
 	stageBase     stage = "base" // merged, not shipped
 	stageProd     stage = "prod"
 	stageDetached stage = "detached"
+	stageRef      stage = "ref"   // only read: detached on the base, never ships
 	stageError    stage = "error" // couldn't tell
 )
 
@@ -151,6 +152,7 @@ type repoState struct {
 	branch, head                  string
 	stage                         stage
 	modified, untracked, unpushed int
+	behind                        int // a reference: commits its base got since; izumo pull catches up
 	pr, review, ci                string
 }
 
@@ -180,6 +182,14 @@ func stateOf(t task, repo string) (repoState, error) {
 	}
 	n, _ := gitOut(wt, "rev-list", "--count", "HEAD", "--not", "--remotes")
 	s.unpushed, _ = strconv.Atoi(n)
+	if t.isRef(repo) {
+		s.stage = stageRef
+		if base, err := baseRef(src, t.base); err == nil {
+			n, _ := gitOut(wt, "rev-list", "--count", "HEAD.."+base)
+			s.behind, _ = strconv.Atoi(n)
+		}
+		return s, nil
+	}
 	if s.branch == "" {
 		s.stage = stageDetached
 		return s, nil

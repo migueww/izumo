@@ -368,6 +368,44 @@ says 'fetched (main has local changes)' pull c
 says 'up to date' pull a
 refuses 'no git clone' pull nope
 
+# --ref: a repo the task only reads, detached on its base: no branch, no post_add
+iz new reader a >/dev/null
+says 'tasks/reader/b' add b --ref --task reader
+[ -z "$(git -C tasks/reader/b branch --show-current)" ] || fail "the ref has a branch"
+git -C b show-ref --quiet refs/heads/reader && fail "the ref made a branch"
+[ "$(git -C tasks/reader/b rev-parse HEAD)" = "$(git -C b rev-parse origin/hml)" ] || fail "the ref is not on the base"
+grep -q 'reader b' hook.log && fail "post_add ran for a ref"
+grep -q '"name": "b (ref)"' tasks/reader/reader.code-workspace || fail "the workspace does not mark the ref"
+jsays 'reader/b repo="b" branch="" stage="ref"' reader
+# pull keeps it on the base's tip, unless someone edited it
+git -C "$T/dev/b" fetch -q && git -C "$T/dev/b" checkout -q -B hml origin/hml
+git -C "$T/dev/b" commit -q --allow-empty -m newer && git -C "$T/dev/b" push -q origin hml
+says '1-behind' ls --fetch reader
+says 'reader/b (ref)  moved to origin/hml' pull b
+[ "$(git -C tasks/reader/b rev-parse HEAD)" = "$(git -C "$T/dev/b" rev-parse HEAD)" ] || fail "pull did not move the ref"
+echo x > tasks/reader/b/x
+says 'has changes, left as is' pull b
+refuses 'b has uncommitted changes' done reader
+rm tasks/reader/b/x
+# done takes the task once a ships: the ref has nothing to ship
+git -C tasks/reader/a commit -q --allow-empty -m r && git -C tasks/reader/a push -q origin reader
+dev fetch -q && dev checkout -q hml && dev merge -q --no-ff origin/reader -m merge && dev push -q origin hml
+promote
+says 'removed reader' done reader
+git -C b worktree list | grep -q tasks/reader && fail "the ref's worktree is left"
+# a ref the task turns out to change becomes a worktree on the task's branch; drop takes a ref out
+iz new grows a >/dev/null
+iz add b --ref --task grows >/dev/null
+iz add b --task grows >/dev/null || fail "add a repo the task had as a ref"
+[ "$(git -C tasks/grows/b branch --show-current)" = grows ] || fail "the ref did not become a branch"
+jsays 'grows/b repo="b" branch="grows" stage="empty"' grows
+grep -q T_REFS tasks/grows/.task && fail "b still listed as a ref"
+refuses 'b is already in task' add b --ref --task grows
+iz new peek a >/dev/null && iz add c --ref --task peek >/dev/null
+iz drop c --task peek >/dev/null || fail "drop a ref"
+grep -q T_REFS tasks/peek/.task && fail "a dropped ref is still listed"
+iz rm grows peek >/dev/null || fail "rm grows peek"
+
 # servers: done, rm and drop stop the dev servers running from the task, once told to
 serve() {  # serve <task> <repo>: a server running from that worktree, like pnpm dev; sets PORT
   PORT=$((20000 + RANDOM % 20000))

@@ -56,6 +56,7 @@ type lsRepo struct {
 	Review    string   `json:"review"`
 	CI        string   `json:"ci"`
 	Serving   []uint32 `json:"serving"`
+	Behind    int      `json:"behind"` // a reference: commits its base got since; izumo pull catches up
 }
 
 func cmdLs(args []string) error {
@@ -119,7 +120,7 @@ func cmdLs(args []string) error {
 			s := states[k]
 			k++
 			lr := lsRepo{Repo: r, Branch: s.branch, Stage: s.stage, Dirty: s.dirty(), Modified: s.modified,
-				Untracked: s.untracked, Unpushed: s.unpushed, PR: s.pr, Review: s.review, CI: s.ci, Serving: []uint32{}}
+				Untracked: s.untracked, Unpushed: s.unpushed, Behind: s.behind, PR: s.pr, Review: s.review, CI: s.ci, Serving: []uint32{}}
 			for _, v := range srv {
 				if v.task == t.name && v.repo == r {
 					lr.Serving = append(lr.Serving, v.ports...)
@@ -128,7 +129,7 @@ func cmdLs(args []string) error {
 			switch s.stage {
 			case stageProd:
 				shipped = true
-			case stageEmpty:
+			case stageEmpty, stageRef:
 			default:
 				ready = false
 			}
@@ -175,6 +176,9 @@ func cmdLs(args []string) error {
 			}
 			if len(r.Serving) > 0 {
 				flags += " " + paint(cyan, "serving:"+portList(r.Serving))
+			}
+			if r.Behind > 0 {
+				flags += " " + paint(yellow, strconv.Itoa(r.Behind)+"-behind")
 			}
 			// padded before painting, so the columns line up with or without color
 			fmt.Printf("  %s %s %s%s %s\n", fmt.Sprintf("%-32s", r.Repo), paint(dim, fmt.Sprintf("%-36s", r.Branch)),

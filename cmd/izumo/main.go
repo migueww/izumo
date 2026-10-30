@@ -27,7 +27,7 @@ const usage = `izumo: one folder per task, one git worktree per repo
 
   izumo                                    same as izumo ls
   izumo new <task> [repo...] [--branch B] [--base BRANCH]
-  izumo add <repo...> [--task T]
+  izumo add <repo...> [--task T] [--ref]   --ref: a repo the task only reads
   izumo drop <repo...> [--task T]          take repos out of a task, keeping the task
   izumo adopt <worktree...> [--task T]     move existing worktrees into a task
   izumo mv <task> <new-name>               rename a task (branches keep their names)
