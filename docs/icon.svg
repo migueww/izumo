@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" fill="#0d1117"/>
+  <g fill="#e34234" transform="translate(0 -14)">
+    <!-- kasagi: the top beam, ends lifted -->
+    <path d="M150 268 Q512 300 874 268 L888 222 Q512 262 136 222 Z"/>
+    <!-- shimaki under it -->
+    <rect x="196" y="300" width="632" height="44" rx="8"/>
+    <!-- nuki: the tie beam -->
+    <rect x="232" y="420" width="560" height="44" rx="8"/>
+    <!-- gakuzuka between the beams -->
+    <rect x="490" y="344" width="44" height="76"/>
+    <!-- pillars, slightly leaning in -->
+    <path d="M318 344 L370 344 L382 830 L322 830 Z"/>
+    <path d="M654 344 L706 344 L702 830 L642 830 Z"/>
+  </g>
+</svg>

@@ -1,5 +1,7 @@
 {
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "izumo",
+  "description": "izumo: one folder per task, one git worktree per repo, for work that spans many repos.",
   "owner": { "name": "migueww" },
   "plugins": [
     {
