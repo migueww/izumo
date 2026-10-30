@@ -164,6 +164,11 @@ shrines and travel to the Grand Shrine of Izumo. There they meet to decide the
 gathering ends, each god goes home. A task works the same way: the repos come together
 in one place to settle how they connect, then return to their own clones.
 
+## Contributing
+
+izumo grows from real use. Found a bug or need something it doesn't do? Open an issue, or
+read [CONTRIBUTING.md](CONTRIBUTING.md) and send a pull request.
+
 ## License
 
 MIT
