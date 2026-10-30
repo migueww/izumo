@@ -1,5 +1,9 @@
 # izumo
 
+> **This is the bash version, kept for Windows machines with Smart App Control on, which
+> block the unsigned binary of izumo 1.x.** It gets bug fixes only, until that binary is
+> signed. Everything else: the [main branch](https://github.com/migueww/izumo).
+
 **One folder per task, one git worktree per repo.** For people (and agents) who work
 across many repos at once, and whose tasks grow mid-way: you start in two services,
 find out a third needs a change, and finish in a fifth.
@@ -37,7 +41,7 @@ default: turn them on in `/plugin` → Marketplaces, or run
 **Your own terminal** (also what other agents use):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/migueww/izumo/main/bin/izumo -o ~/.local/bin/izumo
+curl -fsSL https://raw.githubusercontent.com/migueww/izumo/bash/bin/izumo -o ~/.local/bin/izumo
 chmod +x ~/.local/bin/izumo
 ```
 
