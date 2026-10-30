@@ -192,8 +192,17 @@ func createTask(t task) {
 	writeWorkspace(t.name)
 }
 
+// notRemoving: a removal that stopped halfway lists what it removes; changing the task before it
+// finishes would leave the change out of that list
+func notRemoving(t string) {
+	if exists(path.Join(tasksDir, t, ".removing")) {
+		die("%s: a removal stopped halfway; finish it with izumo rm %s", t, t)
+	}
+}
+
 func addRepos(name string, repos []string, out io.Writer) {
 	t := loadTask(name)
+	notRemoving(name)
 	for _, repo := range repos {
 		validName(repo)
 		src, wt := path.Join(root, repo), path.Join(tasksDir, name, repo)
@@ -203,9 +212,7 @@ func addRepos(name string, repos []string, out io.Writer) {
 		if exists(wt) {
 			die("%s is already in task '%s'", repo, name)
 		}
-		if !gitOK(src, "fetch", "--quiet", "origin") {
-			say("%s: fetch failed, using local refs", repo)
-		}
+		fetch(src)
 		var err error
 		if hasRef(src, "refs/heads/"+t.branch) || hasRef(src, "refs/remotes/origin/"+t.branch) {
 			// existing branch, local or on origin (git creates the tracking branch)
@@ -336,9 +343,14 @@ func cmdAdopt(args []string) {
 			die("%s: its repo %s is not a clone in %s", p, src, root)
 		}
 		repo := path.Base(src)
+		validName(repo)
 		from := ""
 		if under(abs, tasksDir) {
 			from, _, _ = strings.Cut(abs[len(tasksDir)+1:], "/")
+			notRemoving(from)
+		}
+		if isFile(path.Join(tasksDir, name, ".task")) {
+			notRemoving(name)
 		}
 		if !isFile(path.Join(tasksDir, name, ".task")) {
 			br, _ := gitOut(abs, "branch", "--show-current")
@@ -375,9 +387,7 @@ func cmdMv(args []string) {
 	if exists(path.Join(tasksDir, name)) {
 		die("task '%s' already exists", name)
 	}
-	if exists(path.Join(dir, ".removing")) {
-		die("%s: a removal stopped halfway; finish it with izumo rm %s", old, old)
-	}
+	notRemoving(old)
 	if under(cwd(), dir) {
 		die("%s: you are inside it, cd out first", old)
 	}

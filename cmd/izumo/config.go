@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path"
 	"strings"
+	"sync"
 )
 
 var (
@@ -14,8 +15,6 @@ var (
 	// from .izumo
 	cfgBase, cfgProd, cfgPrefix, cfgTemplate string
 	hasPostAdd, hasPreRemove                 bool
-
-	bashPath string
 )
 
 func findRoot() (string, error) {
@@ -69,12 +68,9 @@ declare -F pre_remove >/dev/null && printf pre_remove; printf '\0'`).Output()
 	}
 }
 
-func findBash() string {
-	if bashPath != "" {
-		return bashPath
-	}
+// findBash runs once: ls reaches it from parallel goroutines
+var findBash = sync.OnceValue(func() string {
 	if p := os.Getenv("IZUMO_BASH"); p != "" {
-		bashPath = p
 		return p
 	}
 	// on Windows, bash on PATH may be WSL's; Git for Windows ships its own next to git
@@ -83,8 +79,7 @@ func findBash() string {
 			for d := strings.TrimSpace(strings.ReplaceAll(string(out), `\`, "/")); path.Dir(d) != d; d = path.Dir(d) {
 				for _, c := range []string{"bin/bash.exe", "usr/bin/bash.exe"} {
 					if isFile(path.Join(d, c)) {
-						bashPath = path.Join(d, c)
-						return bashPath
+						return path.Join(d, c)
 					}
 				}
 			}
@@ -94,9 +89,8 @@ func findBash() string {
 	if err != nil {
 		die("bash not found: izumo reads .izumo with it (set IZUMO_BASH to its path)")
 	}
-	bashPath = p
 	return p
-}
+})
 
 // bash runs a script with the root's variables in the environment and $1... set to args
 func bash(script string, args ...string) *exec.Cmd {

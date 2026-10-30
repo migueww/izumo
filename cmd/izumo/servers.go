@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"path"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 // server: a process listening on a TCP port that runs from one of the tasks' worktrees
 type server struct {
 	pid        int32
+	created    int64 // with the pid, tells the process apart from a later one given the same pid
 	ports      []uint32
 	name       string
 	task, repo string
@@ -27,11 +29,14 @@ func (s server) portList() string {
 	return strings.Join(p, ",")
 }
 
+// fold: paths compare without case where the file system does, on Windows and macOS
+var fold = runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+
 func servers() []server {
-	wts := map[string]string{} // lowercase task/repo -> task/repo
+	wts := map[string]string{} // task/repo as compared -> task/repo
 	for _, t := range subdirs(tasksDir) {
 		for _, r := range worktrees(t) {
-			wts[strings.ToLower(t+"/"+r)] = t + "/" + r
+			wts[normPath(t+"/"+r, fold)] = t + "/" + r
 		}
 	}
 	if len(wts) == 0 {
@@ -55,42 +60,69 @@ func servers() []server {
 		}
 		cwd, _ := p.Cwd()
 		cmdline, _ := p.Cmdline()
-		tr, ok := place(tasksDir, wts, cwd, cmdline)
+		tr, ok := place(tasksDir, wts, cwd, cmdline, fold)
 		if !ok {
 			continue
 		}
 		name, _ := p.Name()
+		created, _ := p.CreateTime()
 		slices.Sort(ps)
 		t, r, _ := strings.Cut(tr, "/")
-		out = append(out, server{pid, ps, strings.TrimSuffix(path.Base(strings.ReplaceAll(name, `\`, "/")), ".exe"), t, r})
+		out = append(out, server{pid, created, ps, strings.TrimSuffix(path.Base(strings.ReplaceAll(name, `\`, "/")), ".exe"), t, r})
 	}
 	slices.SortFunc(out, func(a, b server) int { return int(a.pid - b.pid) })
 	return out
 }
 
-// place finds the worktree a process runs from: its folder, or a path in its command line
-// (a dev server run from node_modules). Paths compare without case, as on Windows and macOS.
-// A file in the task folder itself (its workspace, open in an editor) is no worktree.
-func place(tasks string, wts map[string]string, cwd, cmdline string) (string, bool) {
-	dir := strings.ToLower(tasks) + "/"
-	for _, s := range []string{cwd + "/", cmdline} {
-		s = strings.ToLower(strings.ReplaceAll(s, `\`, "/"))
-		i := strings.Index(s, dir)
-		if i < 0 {
-			continue
-		}
-		rest := s[i+len(dir):]
+func normPath(s string, fold bool) string {
+	s = strings.ReplaceAll(s, `\`, "/")
+	if fold {
+		s = strings.ToLower(s)
+	}
+	return s
+}
+
+// place finds the worktree a process runs from: its folder, or a path in its command line that
+// starts an argument (a dev server run from node_modules, --dir=...). A file in the task folder
+// itself (its workspace, open in an editor) is no worktree.
+func place(tasks string, wts map[string]string, cwd, cmdline string, fold bool) (string, bool) {
+	dir := normPath(tasks, fold) + "/"
+	worktree := func(rest string) (string, bool) {
 		if j := strings.IndexAny(rest, " \"'"); j >= 0 {
 			rest = rest[:j]
 		}
 		p := strings.SplitN(rest, "/", 3)
-		if len(p) >= 2 {
-			if tr, ok := wts[p[0]+"/"+p[1]]; ok {
+		if len(p) < 2 {
+			return "", false
+		}
+		tr, ok := wts[p[0]+"/"+p[1]]
+		return tr, ok
+	}
+	if c := normPath(cwd, fold) + "/"; strings.HasPrefix(c, dir) {
+		if tr, ok := worktree(c[len(dir):]); ok {
+			return tr, true
+		}
+	}
+	s := normPath(cmdline, fold)
+	for i := 0; ; {
+		j := strings.Index(s[i:], dir)
+		if j < 0 {
+			return "", false
+		}
+		at := i + j
+		if at == 0 || strings.ContainsRune(" \"'=", rune(s[at-1])) {
+			if tr, ok := worktree(s[at+len(dir):]); ok {
 				return tr, true
 			}
 		}
+		i = at + 1
 	}
-	return "", false
+}
+
+// same: is p still the process the scan saw, and not a later one given its pid?
+func same(p *process.Process, created int64) bool {
+	c, err := p.CreateTime()
+	return err == nil && c == created
 }
 
 // stopServers: on Windows with their children (a dev server's esbuild holds the folder too);
@@ -99,12 +131,12 @@ func stopServers(srv []server) {
 	var procs []*process.Process
 	for _, s := range srv {
 		p, err := process.NewProcess(s.pid)
-		if err != nil {
+		if err != nil || !same(p, s.created) {
 			continue
 		}
 		procs = append(procs, p)
 		if windows {
-			procs = append(procs, descendants(p)...)
+			procs = append(procs, descendants(p, s.created)...)
 		}
 	}
 	if windows {
@@ -126,11 +158,16 @@ func stopServers(srv []server) {
 	}
 }
 
-func descendants(p *process.Process) []*process.Process {
+// descendants: Windows keeps a dead parent's pid in its children, so a child must be younger
+// than the parent to be its own
+func descendants(p *process.Process, created int64) []*process.Process {
 	kids, _ := p.Children()
-	out := kids
+	var out []*process.Process
 	for _, k := range kids {
-		out = append(out, descendants(k)...)
+		if c, err := k.CreateTime(); err == nil && c >= created {
+			out = append(out, k)
+			out = append(out, descendants(k, c)...)
+		}
 	}
 	return out
 }

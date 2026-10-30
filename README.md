@@ -88,7 +88,8 @@ the head of a merged PR. Without `gh`, squash-merged work whose remote branch wa
 deleted looks unpushed, and izumo keeps it. On Windows it also keeps a task whose folder
 a program has open (an editor, a terminal), since Windows would stop the removal halfway.
 If a removal stops halfway anyway, `ls` flags the task and running the same command
-again finishes it.
+again finishes it. Files git ignores (`.env`, `node_modules`) go with the worktree:
+keep anything you need elsewhere, or copy it out in `pre_remove`.
 
 A dev server left running from the task (`pnpm dev` on :3000) is no reason to keep it.
 `done`, `rm` and `drop` name the servers listening on a port from the worktrees they
@@ -146,8 +147,7 @@ shows `waiting` until the turn ends.
 ## Not doing
 
 izumo doesn't run or orchestrate agents, clone your repos, open PRs, start servers,
-assign ports or rebase branches. Your other tools do that, and izumo stays small enough to read
-in one sitting.
+assign ports or rebase branches. Your other tools do that.
 
 ## Why "izumo"
 

@@ -5,13 +5,21 @@ package main
 import (
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 )
 
-var version = "1.0.0"
+// version: the release sets it; go install leaves it to the module version
+var version = "dev"
+
+func versionString() string {
+	if bi, ok := debug.ReadBuildInfo(); ok && version == "dev" && strings.HasPrefix(bi.Main.Version, "v") {
+		return strings.TrimPrefix(bi.Main.Version, "v")
+	}
+	return version
+}
 
 const usage = `izumo: one folder per task, one git worktree per repo
 
@@ -62,7 +70,7 @@ func main() {
 		}
 		cmd = "ls"
 	case "--version":
-		fmt.Println("izumo " + version)
+		fmt.Println("izumo " + versionString())
 		return
 	case "-h", "--help", "help":
 		fmt.Print(usage)
@@ -168,5 +176,3 @@ func flagValue(args []string, i int) string {
 	}
 	return args[i+1]
 }
-
-func base(p string) string { return path.Base(p) }

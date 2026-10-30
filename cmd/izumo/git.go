@@ -34,9 +34,10 @@ func isAncestor(dir, a, b string) bool { return gitOK(dir, "merge-base", "--is-a
 
 func hasRef(dir, ref string) bool { return gitOK(dir, "show-ref", "--verify", "--quiet", ref) }
 
+// fetch prunes: a remote branch deleted on GitHub must stop counting as "pushed"
 func fetch(clone string) {
-	if !gitOK(clone, "fetch", "--quiet", "origin") {
-		say("%s: fetch failed, using local refs", base(clone))
+	if !gitOK(clone, "fetch", "--quiet", "--prune", "origin") {
+		say("%s: fetch failed, using local refs", path.Base(clone))
 	}
 }
 
@@ -52,7 +53,7 @@ func baseRef(clone, b string) (string, error) {
 	if r, err := gitOut(clone, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil && r != "" {
 		return r, nil
 	}
-	return "", fmt.Errorf("%s: origin/HEAD unknown; set BASE in .izumo or run: git -C '%s' remote set-head origin -a", base(clone), clone)
+	return "", fmt.Errorf("%s: origin/HEAD unknown; set BASE in .izumo or run: git -C '%s' remote set-head origin -a", path.Base(clone), clone)
 }
 
 func prodRef(clone, b string) (string, error) {
@@ -88,6 +89,7 @@ func checkBase(b string, repos []string) {
 
 type repoState struct {
 	branch, stage                 string // stage: empty|wip|pr|base|prod|detached, error if unknown
+	head                          string
 	modified, untracked, unpushed int
 	pr, review, ci                string
 }
@@ -110,6 +112,7 @@ func stateOf(t task, repo string) (repoState, error) {
 		}
 	}
 	head, _ := gitOut(wt, "rev-parse", "HEAD")
+	s.head = head
 	n, _ := gitOut(wt, "rev-list", "--count", "HEAD", "--not", "--remotes")
 	s.unpushed, _ = strconv.Atoi(n)
 	if s.branch == "" {
@@ -153,6 +156,11 @@ func stateOf(t task, repo string) (repoState, error) {
 			s.ci = pr.ci
 		}
 	case "MERGED":
+		// gh matches by branch name: an old PR of a reused name, or a fork's, says nothing about this work
+		if pr.head != head && !isAncestor(wt, head, pr.head) {
+			s.pr = ""
+			return s, nil
+		}
 		s.stage = "base"
 		if isAncestor(wt, pr.merge, prodR) {
 			s.stage = "prod"

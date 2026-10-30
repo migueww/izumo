@@ -184,6 +184,7 @@ says '[agent working' ls bare
 (cd tasks/bare && iz add b >/dev/null)
 git -C b worktree lock "$T/root/tasks/bare/b"  # a goes first, then removal stops at b
 refuses 'run the same command to finish' rm bare
+refuses 'a removal stopped halfway' add c --task bare  # it would be left out of the list
 git -C b worktree unlock "$T/root/tasks/bare/b"
 mkdir tasks/bare/a  # leftover of a, as Windows leaves a locked cwd behind
 says 'removal stopped halfway' ls bare
@@ -295,6 +296,30 @@ iz rm abandoned --discard >/dev/null 2>&1 || fail "rm --discard"
 [ ! -e tasks/abandoned ] || fail "discard left the folder"
 git -C b show-ref --quiet refs/heads/abandoned && fail "discard left the branch"
 
+# a branch deleted on GitHub (PR closed unmerged) stops counting as pushed once fetched
+iz new closed a >/dev/null
+git -C tasks/closed/a commit -q --allow-empty -m c && git -C tasks/closed/a push -q origin closed
+git -C "$T/dev/a" push -q origin --delete closed
+refuses 'a has 1 unpushed commit(s)' rm closed
+iz rm closed --discard >/dev/null 2>&1 || fail "rm closed"
+
+# a merged PR of an earlier task with the same branch name says nothing about this one
+iz new reused a >/dev/null
+git -C tasks/reused/a commit -q --allow-empty -m r && git -C tasks/reused/a push -q origin reused
+FAKE_PR="https://x/pull/9	MERGED	$(git -C a rev-parse origin/main)	$(git -C a rev-parse origin/main)	-	-" IZUMO_GH="$T/bin/gh" \
+  says 'wip' ls reused
+iz rm reused >/dev/null || fail "rm reused"
+
+# a commit made while the removal runs keeps its branch; the same name archived twice a day keeps both
+echo 'pre_remove() { git commit -q --allow-empty -m late; }' >> .izumo
+iz new late a >/dev/null
+says 'branch late moved since the checks' rm late
+git -C a show-ref --quiet refs/heads/late || fail "a commit made during the removal was deleted"
+git -C a branch -D -q late
+echo 'pre_remove() { :; }' >> .izumo
+iz new late >/dev/null && iz rm late >/dev/null || fail "rm late again"
+ls tasks/.archive/*-late.md tasks/.archive/*-late-2.md >/dev/null || fail "second archive of late overwrote the first"
+
 # pull: clones fast-forward; untracked files don't block, local commits and changes do
 echo 1 > "$T/dev/c/f" && git -C "$T/dev/c" add f && git -C "$T/dev/c" commit -qm f && git -C "$T/dev/c" push -q origin main
 touch a/.env
@@ -318,10 +343,7 @@ serve() {  # serve <task> <repo>: a server running from that worktree, like pnpm
   # a bare socket: http.server looks up DNS before listening, which hangs on macOS runners
   (cd "tasks/$1/$2" && exec "$PY" -c 'import socket, sys, time; s = socket.socket(); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(); time.sleep(300)' "$PORT" "$(pwd -P)") &
   for _ in 1 2 3 4 5 6 7 8 9 10; do up "$PORT" && break; sleep 1; done
-  grep -qF "serving:$PORT" <<<"$("$IZ" ls "$1" 2>&1)" && return
-  # CI-only failures: show what the runner sees
-  { netstat -ano | grep -F ":$PORT"; powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process | ? { \$_.CommandLine -like '*$PORT*' } | % { [string]\$_.ProcessId + ' ' + \$_.CommandLine }"; } >&2 2>/dev/null || true
-  fail "server on $PORT not seen by ls"
+  says "serving:$PORT" ls "$1"
 }
 up() { "$PY" -c "import socket; socket.create_connection(('127.0.0.1', $1), 2)" 2>/dev/null; }
 iz new served a b >/dev/null

@@ -17,6 +17,9 @@ const inUseMsg = "a program has the folder open (VS Code, a terminal, a dev serv
 // stop: "yes" (--stop), "no" (--no-stop) or "" (ask on a terminal, refuse elsewhere)
 var stop string
 
+// answers: one reader for every question, so answers piped in for a done sweep all reach it
+var answers = bufio.NewReader(os.Stdin)
+
 // inUse: Windows won't delete a folder a program has open, and git finds out halfway through;
 // a rename fails in the same cases, so try one while nothing is removed yet
 func inUse(dir string) bool {
@@ -73,7 +76,7 @@ func free(dry bool, label, t, repo string) (why, stopping string) {
 				return "serving: " + list + "; pass --stop to stop it, or --no-stop to leave it running", ""
 			}
 			fmt.Fprintf(os.Stderr, "izumo: %s: stop %s? [Y/n] ", label, list)
-			a, err := bufio.NewReader(os.Stdin).ReadString('\n')
+			a, err := answers.ReadString('\n')
 			if err != nil && a == "" || strings.HasPrefix(strings.ToLower(a), "n") {
 				srv = nil
 			}
@@ -180,9 +183,7 @@ func cmdDrop(args []string) {
 		}
 		gitOK(path.Join(root, r), "worktree", "prune")
 		// every commit is on a remote or in a merged PR, so the local branch holds nothing of its own
-		if s.branch != "" && !gitOK(path.Join(root, r), "branch", "-D", "-q", s.branch) {
-			say("%s: could not delete branch %s", r, s.branch)
-		}
+		deleteBranch(r, s.branch, s.head)
 		writeWorkspace(t.name)
 		fmt.Printf("dropped %s from %s\n", r, t.name)
 	}
@@ -238,12 +239,14 @@ func removeTask(mode string, dry bool, name string, discard bool) bool {
 	if resuming {
 		mode = "rm"
 	}
+	checked := map[string]repoState{}
 	for _, r := range worktrees(name) {
 		fetch(path.Join(root, r))
 		s, err := stateOf(t, r)
 		if err != nil {
 			die("%v", err)
 		}
+		checked[r] = s
 		if s.dirty() {
 			lost = append(lost, fmt.Sprintf("%s has uncommitted changes (%d modified, %d untracked)", r, s.modified, s.untracked))
 		}
@@ -317,21 +320,26 @@ func removeTask(mode string, dry bool, name string, discard bool) bool {
 		}
 		if b, err := os.ReadFile(path.Join(dir, "TASK.md")); err == nil {
 			arch := path.Join(tasksDir, ".archive")
-			if os.MkdirAll(arch, 0o755) != nil || os.WriteFile(path.Join(arch, time.Now().Format("2006-01-02")+"-"+name+".md"), b, 0o644) != nil {
+			day := time.Now().Format("2006-01-02")
+			f := path.Join(arch, day+"-"+name+".md")
+			for n := 2; exists(f); n++ { // the same name removed twice in a day
+				f = path.Join(arch, fmt.Sprintf("%s-%s-%d.md", day, name, n))
+			}
+			if os.MkdirAll(arch, 0o755) != nil || os.WriteFile(f, b, 0o644) != nil {
 				die("%s: could not archive TASK.md; nothing removed", name)
 			}
 		}
+		// each repo's branch and commit as the checks saw them: deleting the branch waits for both
 		var b strings.Builder
 		for _, r := range worktrees(name) {
-			br, _ := gitOut(path.Join(dir, r), "branch", "--show-current")
-			fmt.Fprintf(&b, "%s %s\n", r, br)
+			fmt.Fprintf(&b, "%s %s %s\n", r, checked[r].branch, checked[r].head)
 		}
 		if os.WriteFile(path.Join(dir, ".removing"), []byte(b.String()), 0o644) != nil {
 			die("%s: could not write %s/.removing; nothing removed", name, dir)
 		}
 	}
 	for _, l := range removingLines(name) {
-		r, br := l[0], l[1]
+		r, br, sha := l[0], l[1], l[2]
 		validName(r)
 		src := path.Join(root, r)
 		if isFile(path.Join(dir, r, ".git")) {
@@ -345,9 +353,7 @@ func removeTask(mode string, dry bool, name string, discard bool) bool {
 			}
 		}
 		gitOK(src, "worktree", "prune")
-		if br != "" && hasRef(src, "refs/heads/"+br) && !gitOK(src, "branch", "-D", "-q", br) {
-			say("%s: could not delete branch %s", r, br)
-		}
+		deleteBranch(r, br, sha)
 	}
 	if os.RemoveAll(dir) != nil {
 		die("%s: worktrees and branches are gone, but the folder is in use; delete %s once nothing has it open", name, dir)
@@ -356,19 +362,37 @@ func removeTask(mode string, dry bool, name string, discard bool) bool {
 	return true
 }
 
-// removingLines: repo and branch per line of .removing, the list a removal started with
-func removingLines(t string) [][2]string {
+// deleteBranch deletes a task's branch only while it still points where the checks saw it: a
+// commit made since (an agent in another session, a pre_remove hook) keeps the branch.
+// An empty sha comes from a .removing the bash izumo wrote.
+func deleteBranch(repo, br, sha string) {
+	src := path.Join(root, repo)
+	if br == "" || !hasRef(src, "refs/heads/"+br) {
+		return
+	}
+	if cur, _ := gitOut(src, "rev-parse", "refs/heads/"+br); sha != "" && cur != sha {
+		say("%s: branch %s moved since the checks, so it stays", repo, br)
+		return
+	}
+	if !gitOK(src, "branch", "-D", "-q", br) {
+		say("%s: could not delete branch %s", repo, br)
+	}
+}
+
+// removingLines: repo, branch and commit per line of .removing, the list a removal started with
+func removingLines(t string) [][3]string {
 	f, err := os.Open(path.Join(tasksDir, t, ".removing"))
 	if err != nil {
 		return nil
 	}
 	defer f.Close()
-	var out [][2]string
+	var out [][3]string
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		r, br, _ := strings.Cut(strings.TrimSpace(sc.Text()), " ")
-		if r != "" {
-			out = append(out, [2]string{r, br})
+		var l [3]string
+		copy(l[:], strings.SplitN(strings.TrimRight(sc.Text(), "\r"), " ", 3))
+		if l[0] != "" {
+			out = append(out, l)
 		}
 	}
 	return out
