@@ -48,6 +48,14 @@ Optional: [`gh`](https://cli.github.com), for PR state and squash-merge detectio
 The plugin's `bin/izumo` is a small script that downloads the release binary on first
 use, checks it against the release's checksums and keeps it in `~/.cache/izumo`.
 
+**Windows with Smart App Control on** blocks the binary, which isn't signed yet. Until it
+is, use the bash version from the [`bash` branch](https://github.com/migueww/izumo/tree/bash),
+which gets bug fixes:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/migueww/izumo/bash/bin/izumo -o ~/.local/bin/izumo
+```
+
 ## Use
 
 ```sh
