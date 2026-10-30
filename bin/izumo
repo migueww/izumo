@@ -44,6 +44,18 @@ if [ ! -f "$bin" ]; then
     echo "izumo: $name does not match the release's checksums.txt; not running it" >&2
     exit 1
   fi
+  # checksums.txt only catches a broken download: whoever could swap the binary could swap it too.
+  # The attestation proves this repo's release workflow built it; checking one needs a logged-in gh
+  # (exit 4 without), so without gh the checksum is all there is.
+  if command -v gh >/dev/null; then
+    st=0
+    gh attestation verify "$tmp" --repo migueww/izumo >/dev/null 2>&1 || st=$?
+    if [ $st -ne 0 ] && [ $st -ne 4 ]; then
+      echo "izumo: $name has no attestation from migueww/izumo's release workflow; not running it" >&2
+      echo "izumo: check it yourself: gh attestation verify <file> --repo migueww/izumo" >&2
+      exit 1
+    fi
+  fi
   chmod +x "$tmp"
   mv -f "$tmp" "$bin"
 fi

@@ -46,7 +46,10 @@ Needs git ≥ 2.29, and bash, which reads `.izumo` (on Windows, Git for Windows'
 Optional: [`gh`](https://cli.github.com), for PR state and squash-merge detection.
 
 The plugin's `bin/izumo` is a small script that downloads the release binary on first
-use, checks it against the release's checksums and keeps it in `~/.cache/izumo`.
+use, checks it against the release's checksums and keeps it in `~/.cache/izumo`. With a
+logged-in `gh` it also checks the binary's build attestation, the proof that this repo's
+release workflow built it; `gh attestation verify <file> --repo migueww/izumo` does the
+same for a binary you downloaded by hand.
 
 **Windows with Smart App Control on** blocks the binary, which isn't signed yet. Until it
 is, use the bash version from the [`bash` branch](https://github.com/migueww/izumo/tree/bash),
