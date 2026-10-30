@@ -62,7 +62,11 @@ var servers = sync.OnceValue(func() []server {
 		if !ok {
 			continue
 		}
-		name, _ := p.Name()
+		// the program, not the process name: on Linux node renames its main thread, which /proc reports
+		name, err := p.Exe()
+		if err != nil || name == "" {
+			name, _ = p.Name()
+		}
 		created, _ := p.CreateTime()
 		slices.Sort(ps)
 		t, r, _ := strings.Cut(tr, "/")
