@@ -36,6 +36,7 @@ const usage = `izumo: one folder per task, one git worktree per repo
   izumo done [task...] [--dry-run]
   izumo rm <task...> [--dry-run] [--discard]   --discard: even losing changes and commits
       done, rm and drop stop the task's dev servers after asking; --stop / --no-stop answer ahead
+  izumo stop [repo...] [--task T] [--dry-run]   stop a task's dev servers, keeping the task
   izumo run [--task T] [--] <command...>   run a command in each repo of a task
   izumo pull [repo...]                     fetch the root's clones, fast-forward the clean ones
 
@@ -53,7 +54,7 @@ func main() { os.Exit(run(os.Args[1:])) }
 
 var commands = map[string]func([]string) error{
 	"new": cmdNew, "add": cmdAdd, "drop": cmdDrop, "adopt": cmdAdopt, "mv": cmdMv, "base": cmdBase,
-	"ls": cmdLs, "done": cmdDone, "rm": cmdRm, "run": cmdRun, "pull": cmdPull,
+	"ls": cmdLs, "done": cmdDone, "rm": cmdRm, "stop": cmdStop, "run": cmdRun, "pull": cmdPull,
 }
 
 func run(args []string) int {

@@ -83,10 +83,11 @@ izumo done --dry-run && izumo done            # remove what has shipped
 | `adopt <worktree...> [--task T]` | Moves worktrees you made by hand, or a repo from another task, into a task. Creates the task if needed, on the first worktree's branch. |
 | `mv <task> <new-name>` | Renames a task. Branches keep their names, since they may have PRs open. |
 | `base <branch> [--task T]` | Changes the branch a task is based on: repos added later start from it, and stages compare against it. Existing worktrees aren't rebased. |
-| `ls [task...] [--json] [--fetch]` | Stage per repo: `empty` (no commits yet), `wip`, `pr` (open, with review decision and CI: `approved`, `changes-requested`, `ci:failing`...), `base` (merged, not shipped), `prod`, or `ref` for a repo only read (with `3-behind` when its base moved on). Plus modified and untracked files, unpushed commits, the ports its dev servers listen on (`serving:3000`), what the task's agent is doing, and `[ready: izumo done]` when `done` would take the task. Reads the last fetch unless you pass `--fetch`. Plain `izumo` runs it. |
+| `ls [task...] [--json] [--fetch]` | Stage per repo: `empty` (no commits yet), `wip`, `pr` (open, with review decision and CI: `approved`, `changes-requested`, `ci:failing`...), `base` (merged, not shipped), `prod`, or `ref` for a repo only read (with `3-behind` when its base moved on). Plus modified and untracked files, unpushed commits, the ports its dev servers listen on and for how long (`serving:3000 (2h)`, the port a link to it where the terminal shows links), what the task's agent is doing, and `[ready: izumo done]` when `done` would take the task. Reads the last fetch unless you pass `--fetch`. Plain `izumo` runs it. |
 | `done [task...] [--dry-run] [--stop\|--no-stop]` | Fetches, then removes tasks whose repos are all in `prod` or `empty` (at least one in `prod`). No args: sweeps all tasks. |
 | `rm <task...> [--dry-run] [--discard] [--stop\|--no-stop]` | Removes a task even if it never shipped: a review, an abandoned idea. `--discard` removes it even when that loses uncommitted changes, unpushed commits or unknown files; `--dry-run --discard` lists exactly what would be lost. |
 | `pull [repo...]` | Fetches the root's clones (pruning deleted branches) and fast-forwards the ones on a clean branch, so code you or an agent reads there is current, and moves the tasks' `--ref` repos to their base's tip. Clones with local commits or changes are only fetched, a ref someone edited stays put, and it says why. |
+| `stop [repo...] [--task T] [--dry-run]` | Stops the dev servers running from a task, or from some of its repos, and keeps the task: to free a port or the machine while the task waits. |
 | `run [--task T] [--] <command...>` | Runs a command in each repo the task works on (not its refs), in order, with the hook variables set (`izumo run -- pnpm test`). Fails if it failed in any repo. |
 
 Neither `done`, `rm` nor `drop` removes anything that has uncommitted changes, unpushed commits or
@@ -99,6 +100,7 @@ again finishes it. Files git ignores (`.env`, `node_modules`) go with the worktr
 keep anything you need elsewhere, or copy it out in `pre_remove`.
 
 A dev server left running from the task (`pnpm dev` on :3000) is no reason to keep it.
+`izumo stop` takes the task's servers down any time; when removing,
 `done`, `rm` and `drop` name the servers listening on a port from the worktrees they
 remove and ask before stopping them; `--stop` or `--no-stop` answers ahead, and without
 a terminal (an agent) one of them is required. izumo finds a server by its folder, or by

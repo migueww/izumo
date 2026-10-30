@@ -39,24 +39,33 @@ type lsTask struct {
 	Repos    []lsRepo `json:"repos"`
 }
 
+// lsServer: a dev server running from the repo's worktree
+type lsServer struct {
+	PID     int32    `json:"pid"`
+	Program string   `json:"program"`
+	Ports   []uint32 `json:"ports"`
+	Since   int64    `json:"since"` // unix seconds
+}
+
 type agent struct {
 	State string `json:"state"`
 	Since int64  `json:"since"`
 }
 
 type lsRepo struct {
-	Repo      string   `json:"repo"`
-	Branch    string   `json:"branch"`
-	Stage     stage    `json:"stage"`
-	Dirty     bool     `json:"dirty"`
-	Modified  int      `json:"modified"`
-	Untracked int      `json:"untracked"`
-	Unpushed  int      `json:"unpushed"`
-	PR        string   `json:"pr"`
-	Review    string   `json:"review"`
-	CI        string   `json:"ci"`
-	Serving   []uint32 `json:"serving"`
-	Behind    int      `json:"behind"` // a reference: commits its base got since; izumo pull catches up
+	Repo      string     `json:"repo"`
+	Branch    string     `json:"branch"`
+	Stage     stage      `json:"stage"`
+	Dirty     bool       `json:"dirty"`
+	Modified  int        `json:"modified"`
+	Untracked int        `json:"untracked"`
+	Unpushed  int        `json:"unpushed"`
+	PR        string     `json:"pr"`
+	Review    string     `json:"review"`
+	CI        string     `json:"ci"`
+	Serving   []uint32   `json:"serving"` // every port of the servers below
+	Servers   []lsServer `json:"servers"`
+	Behind    int        `json:"behind"` // a reference: commits its base got since; izumo pull catches up
 }
 
 func cmdLs(args []string) error {
@@ -120,10 +129,12 @@ func cmdLs(args []string) error {
 			s := states[k]
 			k++
 			lr := lsRepo{Repo: r, Branch: s.branch, Stage: s.stage, Dirty: s.dirty(), Modified: s.modified,
-				Untracked: s.untracked, Unpushed: s.unpushed, Behind: s.behind, PR: s.pr, Review: s.review, CI: s.ci, Serving: []uint32{}}
+				Untracked: s.untracked, Unpushed: s.unpushed, Behind: s.behind, PR: s.pr, Review: s.review, CI: s.ci,
+				Serving: []uint32{}, Servers: []lsServer{}}
 			for _, v := range srv {
 				if v.task == t.name && v.repo == r {
 					lr.Serving = append(lr.Serving, v.ports...)
+					lr.Servers = append(lr.Servers, lsServer{v.pid, v.name, v.ports, v.created / 1000})
 				}
 			}
 			switch s.stage {
@@ -174,8 +185,9 @@ func cmdLs(args []string) error {
 			if r.CI != "" {
 				flags += " " + paint(flagColor["ci:"+r.CI], "ci:"+r.CI)
 			}
-			if len(r.Serving) > 0 {
-				flags += " " + paint(cyan, "serving:"+portList(r.Serving))
+			// each server with how long it has been up: a forgotten one shows its days
+			for _, v := range r.Servers {
+				flags += " " + paint(cyan, "serving:"+portLinks(v.Ports)) + " " + paint(dim, "("+ago(v.Since)+")")
 			}
 			if r.Behind > 0 {
 				flags += " " + paint(yellow, strconv.Itoa(r.Behind)+"-behind")
@@ -233,8 +245,22 @@ func ago(since int64) string {
 		return fmt.Sprintf("%ds", s)
 	case s < 3600:
 		return fmt.Sprintf("%dm", s/60)
+	case s < 86400:
+		return fmt.Sprintf("%dh", s/3600)
 	}
-	return fmt.Sprintf("%dh", s/3600)
+	return fmt.Sprintf("%dd", s/86400)
+}
+
+// portLinks: the ports, each a link to its localhost where the terminal shows links (OSC 8)
+func portLinks(ports []uint32) string {
+	l := make([]string, len(ports))
+	for i, p := range ports {
+		l[i] = strconv.Itoa(int(p))
+		if color() {
+			l[i] = fmt.Sprintf("\x1b]8;;http://localhost:%d\x1b\\%d\x1b]8;;\x1b\\", p, p)
+		}
+	}
+	return strings.Join(l, ",")
 }
 
 // agentHook is the Claude Code hook (hooks/hooks.json): record what the agent in this task is

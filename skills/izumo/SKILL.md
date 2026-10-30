@@ -50,8 +50,12 @@ must be on PATH; if it is missing, point the user to https://github.com/migueww/
   --discard` only when the user said to throw that work away; run it with `--dry-run`
   first and show what would be lost. A
   removal that stopped halfway finishes by running the same command again.
-- **Dev servers:** when a dry run says it would also stop servers (`and stop node on :3000
-  ...`), ask the user before the real run, then pass `--stop`, or `--no-stop` if they want
-  them left running. Without either flag the removal refuses, since you have no terminal.
+- **Dev servers:** before starting one (`pnpm dev`, `npm start`...), check `izumo ls <task>
+  --json`: if the repo already has one in `servers`, use its port instead of starting
+  another. When you no longer need a server you started, `izumo stop <repo>` from inside
+  the task folder; don't stop servers you didn't start unless the user asks. When a
+  removal's dry run says it would also stop servers (`and stop node on :3000 ...`), ask the
+  user before the real run, then pass `--stop`, or `--no-stop` if they want them left
+  running. Without either flag the removal refuses, since you have no terminal.
 - `TASK.md` is local. When opening a PR, carry the decisions reviewers need into its
   description.

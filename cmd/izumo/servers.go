@@ -193,3 +193,42 @@ func anyRunning(procs []*process.Process) bool {
 	}
 	return false
 }
+
+// stop: the task's dev servers (or its repos') go down, and the task stays: to free a port, or
+// the machine, while the task waits
+func cmdStop(args []string) error {
+	o, err := parseFlags(args, []string{"--task"}, []string{"--dry-run"})
+	if err != nil {
+		return err
+	}
+	name, err := taskFromCwd(o.values["--task"])
+	if err != nil {
+		return err
+	}
+	if _, err := loadTask(name); err != nil {
+		return err
+	}
+	var srv []server
+	for _, r := range o.args {
+		if err := validName(r); err != nil {
+			return err
+		}
+		if !isFile(path.Join(tasksDir, name, r, ".git")) {
+			return fmt.Errorf("%s is not in task '%s'", r, name)
+		}
+		srv = append(srv, serversIn(name, r)...)
+	}
+	if len(o.args) == 0 {
+		srv = serversIn(name, "")
+	}
+	switch {
+	case len(srv) == 0:
+		fmt.Printf("nothing serving in %s\n", name)
+	case o.has("--dry-run"):
+		fmt.Printf("would stop %s\n", describe(srv))
+	default:
+		stopServers(srv)
+		fmt.Printf("stopped %s\n", describe(srv))
+	}
+	return nil
+}

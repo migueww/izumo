@@ -418,6 +418,8 @@ up() { "$PY" -c "import socket; socket.create_connection(('127.0.0.1', $1), 2)" 
 iz new served a b >/dev/null
 serve served a
 jsays "serving=[$PORT]" served
+jsays "\"ports\": [$PORT], \"since\": " served  # each server: pid, program, ports, since
+says "serving:$PORT (" ls served                # with how long it has been up
 says ":$PORT in a (pid" rm served --dry-run
 refuses 'pass --stop to stop it, or --no-stop' rm served
 up "$PORT" || fail "a refusal stopped the server"
@@ -436,5 +438,18 @@ case $(uname -s) in
     kill %% 2>/dev/null || true;;
 esac
 [ ! -e tasks/served ] || fail "served not removed"
+
+# stop: the servers go down, the task stays
+iz new paused a b >/dev/null
+serve paused a
+says "would stop" stop --task paused --dry-run
+up "$PORT" || fail "stop --dry-run stopped the server"
+(cd tasks/paused && says "stopped" stop a)
+up "$PORT" && fail "stop left the server running"
+[ -f tasks/paused/a/.git ] || fail "stop removed the worktree"
+says 'nothing serving in paused' stop --task paused
+refuses 'nope is not in task' stop nope --task paused
+for _ in 1 2 3 4 5; do iz rm paused >/dev/null 2>&1 && break; sleep 1; done  # Windows: the server's shell lets go
+[ ! -e tasks/paused ] || fail "rm paused"
 
 echo ok
