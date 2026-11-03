@@ -149,7 +149,8 @@ func cmdLs(args []string) error {
 			}
 			lt.Repos = append(lt.Repos, lr)
 		}
-		lt.Ready = ready && shipped && !lt.Removing
+		// done keeps a task with files of its own in the folder, so it isn't ready either
+		lt.Ready = ready && shipped && !lt.Removing && len(unknownFiles(t.name)) == 0
 		list = append(list, lt)
 	}
 
