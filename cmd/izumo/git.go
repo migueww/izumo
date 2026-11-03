@@ -228,23 +228,54 @@ func stateOf(t task, repo string) (repoState, error) {
 		s.review = map[string]string{"APPROVED": "approved", "CHANGES_REQUESTED": "changes-requested", "REVIEW_REQUIRED": "review-required"}[p.ReviewDecision]
 		s.ci = p.ci()
 	case "MERGED":
-		// gh matches by branch name: an old PR of a reused name, or a fork's, says nothing about this work
-		if p.HeadRefOid != s.head && !isAncestor(wt, s.head, p.HeadRefOid) {
+		// gh matches by branch name: the PR counts only if this work is in it, its head being HEAD or
+		// ahead of it; an old PR of a reused name, or a fork's, says nothing about this work. HEAD
+		// ahead of the PR, or apart from it, has commits the PR never got.
+		if p.HeadRefOid != s.head && !inPR(wt, s.head, p) {
 			return s, nil
 		}
 		s.stage, s.pr = stageBase, p.URL
-		if p.MergeCommit != nil && isAncestor(wt, p.MergeCommit.Oid, prodR) {
+		if p.MergeCommit != nil && shipped(wt, p.MergeCommit.Oid, prodR) {
 			s.stage = stageProd
 		}
-		// squash merge: the branch commits live on in the PR, so nothing is lost
-		if p.HeadRefOid == s.head {
-			s.unpushed = 0
-		}
+		// every local commit is in the merged PR (squash merges leave them nowhere else), so
+		// nothing is lost
+		s.unpushed = 0
 	}
 	return s, nil
 }
 
+// inPR: is HEAD behind the PR's head, every local commit in the PR? The head may never have
+// been fetched (a commit made in GitHub's editor, the branch deleted after the merge), so it is
+// fetched from the PR's own ref; when that fails, the answer stays no.
+func inPR(wt, head string, p *pr) bool {
+	if !gitOK(wt, "cat-file", "-e", p.HeadRefOid+"^{commit}") &&
+		(p.Number == 0 || !gitOK(wt, "fetch", "--quiet", "origin", fmt.Sprintf("refs/pull/%d/head", p.Number))) {
+		return false
+	}
+	return isAncestor(wt, head, p.HeadRefOid)
+}
+
+// shipped: is the commit in prod, merged or cherry-picked? A squash promoted by cherry-pick lands
+// in prod as another commit with the same change, which git cherry marks with "-".
+func shipped(dir, commit, prod string) bool {
+	if isAncestor(dir, commit, prod) {
+		return true
+	}
+	out, err := gitOut(dir, "cherry", prod, commit, commit+"^")
+	if err != nil || out == "" {
+		return false
+	}
+	for _, l := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(l, "- ") {
+			return false
+		}
+	}
+	return true
+}
+
 type pr struct {
+	Number      int    `json:"number"`
 	URL         string `json:"url"`
 	State       string `json:"state"`
 	MergeCommit *struct {
@@ -294,7 +325,7 @@ func prOf(wt, branch string) *pr {
 		return nil
 	}
 	c := exec.Command(bin, "pr", "list", "--head", branch, "--state", "all", "--limit", "1",
-		"--json", "url,state,mergeCommit,headRefOid,reviewDecision,statusCheckRollup")
+		"--json", "number,url,state,mergeCommit,headRefOid,reviewDecision,statusCheckRollup")
 	c.Dir = wt
 	out, err := c.Output()
 	var prs []pr

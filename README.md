@@ -91,9 +91,12 @@ izumo done --dry-run && izumo done            # remove what has shipped
 | `run [--task T] [--] <command...>` | Runs a command in each repo the task works on (not its refs), in order, with the hook variables set (`izumo run -- pnpm test`). Fails if it failed in any repo. |
 
 Neither `done`, `rm` nor `drop` removes anything that has uncommitted changes, unpushed commits or
-files it didn't create, unless you say `rm --discard`. "Unpushed" means the commit is on no remote branch and is not
-the head of a merged PR. Without `gh`, squash-merged work whose remote branch was
-deleted looks unpushed, and izumo keeps it. On Windows it also keeps a task whose folder
+files it didn't create, unless you say `rm --discard`. "Unpushed" means the commit is on no remote branch and is
+neither the head of a merged PR nor behind it (a commit added to the PR on GitHub after your
+last push leaves your branch behind, and loses nothing). A merged PR is in `prod` when its
+merge commit is, or when the same change is, as when a release branch cherry-picks it.
+Without `gh`, squash-merged work whose remote branch was deleted looks unpushed, and izumo
+keeps it. On Windows it also keeps a task whose folder
 a program has open (an editor, a terminal), since Windows would stop the removal halfway.
 If a removal stops halfway anyway, `ls` flags the task and running the same command
 again finishes it. Files git ignores (`.env`, `node_modules`) go with the worktree:
