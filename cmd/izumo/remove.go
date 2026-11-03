@@ -317,20 +317,7 @@ func planRemoval(mode string, t task, discard bool) (*removal, error) {
 	if under(cwd(), p.dir) {
 		p.why = append(p.why, "you are inside it, cd out first")
 	}
-	listed := map[string]bool{}
-	for _, l := range removingLines(t.name) {
-		listed[l[0]] = true
-	}
-	es, _ := os.ReadDir(p.dir)
-	for _, e := range es {
-		f := e.Name()
-		switch f {
-		case ".task", ".agent", ".removing", "TASK.md", "AGENTS.md", "CLAUDE.md", t.name + ".code-workspace":
-			continue
-		}
-		if isFile(path.Join(p.dir, f, ".git")) || p.resuming && listed[f] {
-			continue
-		}
+	for _, f := range unknownFiles(t.name) {
 		p.lost = append(p.lost, "unknown file "+f)
 	}
 	if !discard {
@@ -444,6 +431,30 @@ func archive(name string) error {
 		return fmt.Errorf("%s: could not archive TASK.md; nothing removed", name)
 	}
 	return nil
+}
+
+// unknownFiles: what is in the task folder besides izumo's own files and the worktrees (or, in a
+// removal that stopped halfway, what it had listed): removing the task would lose them
+func unknownFiles(t string) []string {
+	dir := path.Join(tasksDir, t)
+	listed := map[string]bool{}
+	for _, l := range removingLines(t) {
+		listed[l[0]] = true
+	}
+	var out []string
+	es, _ := os.ReadDir(dir)
+	for _, e := range es {
+		f := e.Name()
+		switch f {
+		case ".task", ".agent", ".removing", "TASK.md", "AGENTS.md", "CLAUDE.md", t + ".code-workspace":
+			continue
+		}
+		if isFile(path.Join(dir, f, ".git")) || listed[f] {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // removingLines: repo, branch and commit per line of .removing, the list a removal started with
