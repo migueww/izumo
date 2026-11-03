@@ -119,6 +119,32 @@ IZUMO_GH="$T/bin/gh" says 'base' ls feat-y          # ls reads the last fetch...
 IZUMO_GH="$T/bin/gh" says 'prod' ls --fetch feat-y  # ...unless asked to fetch
 IZUMO_GH="$T/bin/gh" iz done feat-y >/dev/null || fail "squash: done after prod"
 
+# the PR's head was never fetched (a commit made in GitHub's editor, the branch deleted after the
+# merge): it comes from the PR's ref, and a local branch behind it lost nothing. Promoted by
+# cherry-pick, prod has the change as another commit. Ahead of the PR or apart from it, the
+# local commits are not in it, and the task stays.
+iz new feat-w a >/dev/null
+w=tasks/feat-w/a
+echo w1 > $w/w1 && git -C $w add w1 && git -C $w commit -qm w1 && git -C $w push -q origin feat-w
+mine=$(git -C $w rev-parse HEAD)
+dev fetch -q && dev checkout -q -B feat-w origin/feat-w
+echo w2 > "$T/dev/a/w2" && dev add w2 && dev commit -qm "edited on GitHub" && dev push -q origin feat-w
+web=$(dev rev-parse HEAD)
+dev checkout -q hml && dev merge -q --squash feat-w >/dev/null && dev commit -qm "w (#9)" && dev push -q origin hml
+dev push -q origin --delete feat-w
+dev checkout -q main && dev cherry-pick hml >/dev/null && dev push -q origin main
+FAKE_PR="https://x/pull/9	MERGED	$(dev rev-parse hml)	$web	-	-	9"
+git -C a cat-file -e "$web" 2>/dev/null && fail "the test needs the PR's head unfetched"
+IZUMO_GH="$T/bin/gh" refuses 'unpushed commit(s)' done feat-w  # no PR ref to fetch it from: kept
+git -C "$T/remote/a.git" update-ref refs/pull/9/head "$web"
+IZUMO_GH="$T/bin/gh" says '"repo": "a", "branch": "feat-w", "stage": "prod", "dirty": false, "modified": 0, "untracked": 0, "unpushed": 0, "pr": "https://x/pull/9"' ls --json --fetch feat-w
+git -C $w commit -q --allow-empty -m apart
+IZUMO_GH="$T/bin/gh" refuses 'unpushed commit(s)' done feat-w  # apart from the PR's head
+git -C $w reset -q --hard "$web" && git -C $w commit -q --allow-empty -m ahead
+IZUMO_GH="$T/bin/gh" refuses 'unpushed commit(s)' done feat-w  # ahead of it
+git -C $w reset -q --hard "$mine"
+IZUMO_GH="$T/bin/gh" iz done feat-w >/dev/null || fail "done with the local branch behind the merged PR"
+
 # review: existing remote branch is checked out, never shipped, removed with rm
 git -C "$T/dev/b" checkout -q -b their-pr && git -C "$T/dev/b" commit -q --allow-empty -m pr
 git -C "$T/dev/b" push -q origin their-pr
