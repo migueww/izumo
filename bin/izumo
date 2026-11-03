@@ -538,6 +538,8 @@ cmd_ls() {
       fi
     done
     if ! $shipped || $removing; then ready=false; fi
+    # done keeps a task with files of its own in the folder, so it isn't ready either
+    if $ready && [ -n "$(unknown_files "$t")" ]; then ready=false; fi
     if $json; then
       printf '%s\n  { "task": %s, "path": %s, "goal": %s, "ready": %s, "removing": %s, "agent": ' \
         "$tsep" "$(json_str "$t")" "$(json_str "$TASKS/$t")" "$(json_str "$(goal "$t")")" "$ready" "$removing"
@@ -558,6 +560,20 @@ cmd_ls() {
 # in_removing <task> <name>: was <name> listed when this task's removal started?
 in_removing() {
   awk -v r="$2" '$1 == r {found = 1} END {exit !found}' "$TASKS/$1/.removing"
+}
+
+# unknown_files <task>: what is in the task folder besides izumo's own files and the worktrees
+# (or, in a removal that stopped halfway, what it had listed): removing the task would lose them
+unknown_files() {
+  local dir=$TASKS/$1 f
+  for f in "$dir"/* "$dir"/.[!.]*; do
+    [ -e "$f" ] || continue
+    f=$(basename "$f")
+    case $f in .task|.agent|.removing|TASK.md|AGENTS.md|CLAUDE.md|"$1.code-workspace") continue;; esac
+    [ -f "$dir/$f/.git" ] && continue
+    if [ -f "$dir/.removing" ] && in_removing "$1" "$f"; then continue; fi
+    echo "$f"
+  done
 }
 
 IN_USE="a program has the folder open (VS Code, a terminal, a dev server?), close it"
@@ -771,14 +787,7 @@ remove_task() {
   done
   # Windows locks a shell's cwd, so removal would stop halfway; elsewhere the shell is left in a deleted dir
   case "$(pwd -P)/" in "$dir"/*) why="$why; you are inside it, cd out first";; esac
-  for f in "$dir"/* "$dir"/.[!.]*; do
-    [ -e "$f" ] || continue
-    f=$(basename "$f")
-    case $f in .task|.agent|.removing|TASK.md|AGENTS.md|CLAUDE.md|"$t.code-workspace") continue;; esac
-    [ -f "$dir/$f/.git" ] && continue
-    if $resuming && in_removing "$t" "$f"; then continue; fi
-    lost="$lost; unknown file $f"
-  done
+  while IFS= read -r f; do lost="$lost; unknown file $f"; done < <(unknown_files "$t")
   if ! $discard; then why="$lost$why" lost=; fi
   if [ "$mode" = done ] && ! $shipped && [ -z "$why" ]; then why="; nothing reached prod"; fi
   if [ -z "$why" ] && ! free "$dry" "$t" "$t"; then why="; $WHY"; fi
