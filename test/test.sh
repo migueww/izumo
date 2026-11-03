@@ -62,13 +62,13 @@ case $(uname -s) in MINGW*|MSYS*|CYGWIN*)
   printf '@"%s" "%s" %%*\r\n' "$(cygpath -w "$(command -v bash)")" "$(cygpath -w "$T/bin/gh")" > "$T/bin/gh.cmd"
   GHFAKE=$T/bin/gh.cmd;;
 esac
-# pr <url> <state> <merge commit> <head> <review decision> <check conclusion>: gh pr list --json
+# pr <url> <state> <merge commit> <head> <review decision> <check conclusion> [mergeable]: gh pr list --json
 pr() {
   local merge=null checks=
   if [ -n "$3" ]; then merge="{\"oid\":\"$3\"}"; fi
   if [ -n "$6" ]; then checks="{\"conclusion\":\"$6\"}"; fi
-  printf '[{"number":%s,"url":"%s","state":"%s","mergeCommit":%s,"headRefOid":"%s","reviewDecision":"%s","statusCheckRollup":[%s]}]' \
-    "${1##*/}" "$1" "$2" "$merge" "$4" "$5" "$checks"
+  printf '[{"number":%s,"url":"%s","state":"%s","mergeCommit":%s,"headRefOid":"%s","reviewDecision":"%s","mergeable":"%s","statusCheckRollup":[%s]}]' \
+    "${1##*/}" "$1" "$2" "$merge" "$4" "$5" "${7:-MERGEABLE}" "$checks"
 }
 
 # two repos with main + hml, cloned into the root
@@ -143,7 +143,11 @@ head=$(git -C tasks/feat-y/a rev-parse HEAD)
 FAKE_PR=$(pr https://x/pull/1 OPEN "" "$head" CHANGES_REQUESTED FAILURE) IZUMO_GH=$GHFAKE \
   says 'pr     changes-requested ci:failing https://x/pull/1' ls feat-y
 FAKE_PR=$(pr https://x/pull/1 OPEN "" "$head" "" "") IZUMO_GH=$GHFAKE \
-  jsays 'stage="pr" dirty=false modified=0 untracked=0 unpushed=0 pr="https://x/pull/1" review="" ci=""' feat-y
+  jsays 'stage="pr" dirty=false modified=0 untracked=0 unpushed=0 pr="https://x/pull/1" review="" ci="" conflict=false' feat-y
+FAKE_PR=$(pr https://x/pull/1 OPEN "" "$head" "" "" CONFLICTING) IZUMO_GH=$GHFAKE \
+  says 'pr     conflict https://x/pull/1' ls feat-y
+FAKE_PR=$(pr https://x/pull/1 OPEN "" "$head" "" "" CONFLICTING) IZUMO_GH=$GHFAKE \
+  jsays 'ci="" conflict=true' feat-y
 dev checkout -q hml && dev fetch -q && dev merge -q --squash origin/feat-y >/dev/null && dev commit -qm "y (#1)"
 dev push -q origin hml && dev push -q origin --delete feat-y
 git -C a update-ref -d refs/remotes/origin/feat-y

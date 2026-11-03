@@ -154,6 +154,7 @@ type repoState struct {
 	modified, untracked, unpushed int
 	behind                        int // a reference: commits its base got since; izumo pull catches up
 	pr, review, ci                string
+	conflict                      bool // open PR that can't merge into its base
 }
 
 func (s repoState) dirty() bool { return s.modified+s.untracked > 0 }
@@ -227,6 +228,7 @@ func stateOf(t task, repo string) (repoState, error) {
 		s.stage, s.pr = stagePR, p.URL
 		s.review = map[string]string{"APPROVED": "approved", "CHANGES_REQUESTED": "changes-requested", "REVIEW_REQUIRED": "review-required"}[p.ReviewDecision]
 		s.ci = p.ci()
+		s.conflict = p.Mergeable == "CONFLICTING"
 	case "MERGED":
 		// gh matches by branch name: the PR counts only if this work is in it, its head being HEAD or
 		// ahead of it; an old PR of a reused name, or a fork's, says nothing about this work. HEAD
@@ -283,6 +285,7 @@ type pr struct {
 	} `json:"mergeCommit"`
 	HeadRefOid        string `json:"headRefOid"`
 	ReviewDecision    string `json:"reviewDecision"`
+	Mergeable         string `json:"mergeable"` // MERGEABLE, CONFLICTING, or UNKNOWN while GitHub works it out
 	StatusCheckRollup []struct {
 		Conclusion string `json:"conclusion"` // check runs
 		State      string `json:"state"`      // commit statuses
@@ -325,7 +328,7 @@ func prOf(wt, branch string) *pr {
 		return nil
 	}
 	c := exec.Command(bin, "pr", "list", "--head", branch, "--state", "all", "--limit", "1",
-		"--json", "number,url,state,mergeCommit,headRefOid,reviewDecision,statusCheckRollup")
+		"--json", "number,url,state,mergeCommit,headRefOid,reviewDecision,mergeable,statusCheckRollup")
 	c.Dir = wt
 	out, err := c.Output()
 	var prs []pr
