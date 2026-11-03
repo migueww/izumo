@@ -131,6 +131,29 @@ pre_remove() {      # runs inside each worktree before done, rm or drop removes 
 Running two tasks' services at once? Use `$TASK` in `post_add` to set
 `COMPOSE_PROJECT_NAME` or pick ports, and tear them down in `pre_remove`.
 
+### A task's own containers and databases
+
+A container or a database you set up by hand for a task has no tie to it, and stays behind
+after `done`. Give it one when you create it, a label or a name, and `pre_remove` finds it:
+
+```sh
+# creating them, for task $TASK and repo $REPO (in post_add, with izumo run, or by hand)
+docker run -d --label izumo.task="$TASK" --label izumo.repo="$REPO" redis:7
+docker exec postgres createdb -U postgres "${REPO//-/_}_${TASK//-/_}"   # web_front_rollout_flag
+
+pre_remove() {
+  ids=$(docker ps -aq --filter label=izumo.task="$TASK" --filter label=izumo.repo="$REPO")
+  [ -z "$ids" ] || docker rm -f -v $ids
+  docker exec postgres psql -U postgres -qc "DROP DATABASE IF EXISTS \"${REPO//-/_}_${TASK//-/_}\"" 2>/dev/null || true
+}
+```
+
+`pre_remove` runs once per worktree, so filter by the repo as well as the task: `drop <repo>`
+takes one repo out of a task that goes on, and a filter on the task alone would take the
+other repos' containers with it. A `docker rm` that fails keeps the task, so nothing stays
+behind unnoticed; the database drop never fails the hook, since a database already gone is
+fine. `postgres` here is the name of your shared Postgres container.
+
 ## With agents
 
 The task folder is the context: start your agent in `tasks/<task>/` and it sees only
