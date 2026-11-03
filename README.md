@@ -6,7 +6,7 @@
 across many repos at once, and whose tasks grow mid-way: you start in two services,
 find out a third needs a change, and finish in a fifth.
 
-![A task starts in billing-service and web-front, takes in infra, and is removed only once web-front ships](docs/demo.svg)
+![A task starts in billing-service and web-front and takes in infra; ls shows each repo's stage and the dev servers running from it; stop takes one down; done keeps the task until web-front ships, then asks before stopping the last server](docs/demo.svg)
 
 ```
 root/                     ← your clones: fetch only, nobody works here
