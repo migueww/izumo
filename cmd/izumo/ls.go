@@ -63,7 +63,8 @@ type lsRepo struct {
 	PR        string     `json:"pr"`
 	Review    string     `json:"review"`
 	CI        string     `json:"ci"`
-	Serving   []uint32   `json:"serving"` // every port of the servers below
+	Conflict  bool       `json:"conflict"` // the open PR can't merge into its base
+	Serving   []uint32   `json:"serving"`  // every port of the servers below
 	Servers   []lsServer `json:"servers"`
 	Behind    int        `json:"behind"` // a reference: commits its base got since; izumo pull catches up
 }
@@ -130,7 +131,7 @@ func cmdLs(args []string) error {
 			k++
 			lr := lsRepo{Repo: r, Branch: s.branch, Stage: s.stage, Dirty: s.dirty(), Modified: s.modified,
 				Untracked: s.untracked, Unpushed: s.unpushed, Behind: s.behind, PR: s.pr, Review: s.review, CI: s.ci,
-				Serving: []uint32{}, Servers: []lsServer{}}
+				Conflict: s.conflict, Serving: []uint32{}, Servers: []lsServer{}}
 			for _, v := range srv {
 				if v.task == t.name && v.repo == r {
 					lr.Serving = append(lr.Serving, v.ports...)
@@ -185,6 +186,9 @@ func cmdLs(args []string) error {
 			}
 			if r.CI != "" {
 				flags += " " + paint(flagColor["ci:"+r.CI], "ci:"+r.CI)
+			}
+			if r.Conflict {
+				flags += " " + paint(red, "conflict")
 			}
 			// each server with how long it has been up: a forgotten one shows its days
 			for _, v := range r.Servers {

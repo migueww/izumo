@@ -42,7 +42,9 @@ must be on PATH; if it is missing, point the user to https://github.com/migueww/
   inside the task folder, instead of a loop. It fails if any repo failed and names them.
 - **State:** `izumo ls <task> --json`. Add `--fetch` when freshness matters (after a
   merge or promotion). The `agent` field comes from this plugin's hooks; don't write
-  `.agent` yourself.
+  `.agent` yourself. `conflict: true` means the open PR can't merge into its base. A repo
+  in `prod` often has an empty `pr`: once its commits are in prod, izumo doesn't ask
+  GitHub, so don't report its PR as missing.
 - **Removing:** only when the user asks. Name the task: `izumo done <task> --dry-run` (or
   `rm <task> --dry-run`) first, show the result, then run it for real. Bare `izumo done`
   sweeps every task; use it only when the user asks to clean up everything that shipped. Never work around a refusal
