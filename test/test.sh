@@ -91,6 +91,9 @@ out=$("$IZ" ls feat-x) && ! grep -q 'ready' <<<"$out" || fail "ready before prod
 promote
 says 'feat-x  [ready: izumo done]' ls --fetch feat-x
 says '"ready": true' ls --json feat-x
+mkdir tasks/feat-x/notes  # a file done would keep the task for: not ready either
+out=$("$IZ" ls feat-x) && ! grep -q 'ready' <<<"$out" || fail "ready with a file done keeps the task for: $out"
+rmdir tasks/feat-x/notes
 says 'would remove feat-x' done feat-x --dry-run
 [ -d tasks/feat-x ] || fail "dry-run removed"
 iz done >/dev/null
