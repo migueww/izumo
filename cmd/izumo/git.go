@@ -138,10 +138,11 @@ func checkBase(b string, repos []string) error {
 type stage string
 
 const (
-	stageEmpty    stage = "empty" // no commits yet
-	stageWip      stage = "wip"
-	stagePR       stage = "pr"   // open PR
-	stageBase     stage = "base" // merged, not shipped
+	stageEmpty    stage = "empty"  // no commits yet
+	stageWip      stage = "wip"    // commits only here
+	stagePushed   stage = "pushed" // every commit pushed, no PR yet
+	stagePR       stage = "pr"     // open PR
+	stageBase     stage = "base"   // merged, not shipped
 	stageProd     stage = "prod"
 	stageDetached stage = "detached"
 	stageRef      stage = "ref"   // only read: detached on the base, never ships
@@ -218,6 +219,9 @@ func stateOf(t task, repo string) (repoState, error) {
 	}
 	if s.stage == stageEmpty || s.stage == stageProd {
 		return s, nil
+	}
+	if s.stage == stageWip && s.unpushed == 0 {
+		s.stage = stagePushed
 	}
 	p := prOf(wt, s.branch)
 	if p == nil {

@@ -1,6 +1,6 @@
 ---
 name: izumo
-description: Work on multi-repo tasks with the izumo CLI, one folder per task with one git worktree per repo. Use when the current directory, or a parent, has a .izumo file and the user starts, resumes, extends, checks or finishes a piece of work ("start task X in A and B", "this also needs repo C", "how are my tasks?", "clean up what shipped").
+description: Work on multi-repo tasks with the izumo CLI, one folder per task with one git worktree per repo. Use when the current directory, or a parent, has a .izumo file and the user starts, resumes, extends, checks or finishes a piece of work, asks about pull requests, CI, what shipped or what is running, or wants a task's app running ("start task X in A and B", "this also needs repo C", "how are my tasks?", "clean up what shipped", "get it running so I can check it").
 ---
 
 # izumo

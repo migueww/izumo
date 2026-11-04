@@ -66,6 +66,9 @@ func run(args []string) int {
 	case "_agent":
 		agentHook(args)
 		return 0
+	case "_context":
+		contextHook()
+		return 0
 	case "":
 		if _, err := findRoot(); err != nil && os.Getenv("IZUMO_ROOT") == "" {
 			fmt.Print(usage)
