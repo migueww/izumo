@@ -4,7 +4,7 @@
 # https://github.com/migueww/izumo (MIT)
 set -euo pipefail
 
-VERSION=1.4.3
+VERSION=1.4.4
 RELEASES=${IZUMO_RELEASES:-https://github.com/migueww/izumo/releases/download}
 
 # the binary reads .izumo with bash: this one, not whatever bash PATH holds (WSL's, on Windows)
@@ -33,7 +33,7 @@ bin=${IZUMO_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/izumo}/$VERSION/$name
 
 if [ ! -f "$bin" ]; then
   # the Claude Code hooks fire on every prompt: they never download, and say nothing
-  if [ "${1:-}" = _agent ]; then exit 0; fi
+  case ${1:-} in _agent|_context) exit 0;; esac
   echo "izumo: downloading izumo $VERSION for $os/$arch (once)" >&2
   dir=$(dirname "$bin")
   mkdir -p "$dir"

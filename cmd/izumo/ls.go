@@ -268,6 +268,24 @@ func portLinks(ports []uint32) string {
 	return strings.Join(l, ",")
 }
 
+// contextHook is the SessionStart hook (hooks/hooks.json): inside an izumo root, tell the agent so
+// before its first move. The skill loads only when the model picks it, and a request like "get it
+// running" can lead it to another skill that never asks izumo what is already up.
+func contextHook() {
+	if _, err := findRoot(); err != nil {
+		return
+	}
+	out, _ := json.Marshal(map[string]any{"hookSpecificOutput": map[string]string{
+		"hookEventName": "SessionStart",
+		"additionalContext": "This folder is an izumo workspace: each task is a folder in tasks/ with one git worktree " +
+			"per repo. Before looking through repos one by one, or starting a dev server, use the izumo skill and run " +
+			"`izumo ls --json` (name a task to narrow it): in one call it gives each repo's branch, pull request, CI " +
+			"and conflicts, whether the work reached the base branch and production, what exists only on this " +
+			"machine, and the dev servers already running from each worktree.",
+	}})
+	fmt.Println(string(out))
+}
+
 // agentHook is the Claude Code hook (hooks/hooks.json): record what the agent in this task is
 // doing. It fires in every session, so it stays cheap, silent and exits 0 outside a task.
 func agentHook(args []string) {

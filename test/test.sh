@@ -110,11 +110,12 @@ refuses 'a has uncommitted changes (0 modified, 1 untracked)' rm feat-x
 says '1-untracked' ls feat-x
 git -C tasks/feat-x/a add f && git -C tasks/feat-x/a commit -qm f
 refuses 'a has 1 unpushed commit(s)' rm feat-x
+jsays 'branch="feat-x" stage="wip" dirty=false modified=0 untracked=0 unpushed=1'
 git -C tasks/feat-x/a push -q origin feat-x
-jsays 'feat-x/a repo="a" branch="feat-x" stage="wip"'
+jsays 'feat-x/a repo="a" branch="feat-x" stage="pushed"'
 jsays 'feat-x/b repo="b" branch="feat-x" stage="empty"'
 # colors only when asked (the shim asks on a terminal), and NO_COLOR wins
-out=$(IZUMO_COLOR=1 "$IZ" ls feat-x) && grep -qF $'\e[33mwip' <<<"$out" || fail "no color with IZUMO_COLOR=1: $out"
+out=$(IZUMO_COLOR=1 "$IZ" ls feat-x) && grep -qF $'\e[33mpushed' <<<"$out" || fail "no color with IZUMO_COLOR=1: $out"
 out=$(IZUMO_COLOR=1 NO_COLOR=1 "$IZ" ls feat-x) && ! grep -qF $'\e[' <<<"$out" || fail "color despite NO_COLOR: $out"
 
 # done waits for prod: merge-commit flow
@@ -247,6 +248,13 @@ says '[agent working' ls bare
 (cd tasks/bare && iz _agent end)
 [ ! -e tasks/bare/.agent ] || fail "_agent end left .agent"
 
+# the session hook: inside a root it points the agent at izumo ls, anywhere else it says nothing
+out=$(cd tasks/bare/a && iz _context) && "$PY" -c 'import json, sys
+c = json.load(sys.stdin)["hookSpecificOutput"]
+assert c["hookEventName"] == "SessionStart" and "izumo ls --json" in c["additionalContext"]' <<<"$out" ||
+  fail "_context inside a root: $out"
+out=$(cd "$T" && iz _context) && [ -z "$out" ] || fail "_context outside a root: '$out'"
+
 # a removal that stops halfway resumes, and only deletes what it had listed
 (cd tasks/bare && iz add b >/dev/null)
 git -C b worktree lock "$T/root/tasks/bare/b"  # a goes first, then removal stops at b
@@ -374,7 +382,7 @@ iz rm closed --discard >/dev/null 2>&1 || fail "rm closed"
 iz new reused a >/dev/null
 git -C tasks/reused/a commit -q --allow-empty -m r && git -C tasks/reused/a push -q origin reused
 FAKE_PR=$(pr https://x/pull/9 MERGED "$(git -C a rev-parse origin/main)" "$(git -C a rev-parse origin/main)" "" "") IZUMO_GH=$GHFAKE \
-  says 'wip' ls reused
+  says 'pushed' ls reused
 iz rm reused >/dev/null || fail "rm reused"
 
 # a commit made while the removal runs keeps its branch; the same name archived twice a day keeps both

@@ -1,6 +1,9 @@
 {
-  "description": "izumo: record what the agent in a task is doing (tasks/<task>/.agent), shown by izumo ls",
+  "description": "izumo: tell the agent when it starts in an izumo workspace, and record what the agent in a task is doing (tasks/<task>/.agent), shown by izumo ls",
   "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/bin/izumo\" _context" }] }
+    ],
     "UserPromptSubmit": [
       { "hooks": [{ "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/bin/izumo\" _agent working" }] }
     ],
