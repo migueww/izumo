@@ -165,6 +165,13 @@ session picks up where the last one stopped. Agents read state with `izumo ls --
 izumo asks only on a terminal (before stopping dev servers, which a flag answers), so
 agents can run every command.
 
+Does it make a difference? [izumo-bench](https://github.com/migueww/izumo-bench) asked
+Claude Code eight questions about ten tasks across twelve repos, 120 runs in all: with
+izumo, with nothing, and with a well-written `CLAUDE.md` instead. With izumo the agent
+answered in half the time of either, spent 35% less than with nothing and 8% less than
+with the `CLAUDE.md`, and got 37 of its 40 runs fully right, against 19 and 29. The
+fixture, the harness and every run are in that repo.
+
 Keep `TASK.md` to what git can't tell: goal, status / next step, decisions, open items.
 Repos, branches and PRs come from `ls`. `TASK.md` lives only on your machine, so move
 decisions others need into the PR description.
