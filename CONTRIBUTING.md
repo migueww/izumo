@@ -44,6 +44,7 @@ bin/izumo       the shim: downloads the release binary, checks it, runs it
 skills/izumo/   the skill that teaches agents to use izumo
 hooks/          Claude Code hooks: what each task's agent is doing
 test/test.sh    the end-to-end spec
+docs/demo.sh    records docs/demo.svg, the README's demo, from real izumo runs
 ```
 
 ## What a change needs
@@ -59,7 +60,9 @@ test/test.sh    the end-to-end spec
 - **Errors say what to do next**, in one line: `kept (a has 1 unpushed commit(s))`, not
   a stack trace.
 - **Update the README and the skill** when a command changes.
-- `gofmt`, `go vet` and `shellcheck bin/izumo test/test.sh` pass.
+- `gofmt`, `go vet` and `shellcheck bin/izumo test/test.sh docs/demo.sh` pass.
+- **A change to what a terminal shows?** Run `bash docs/demo.sh` once it is released, so the
+  README's demo shows it.
 
 Keep pull requests small, one change each, and say in the description why it is needed.
 

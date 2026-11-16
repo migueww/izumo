@@ -6,7 +6,7 @@
 across many repos at once, and whose tasks grow mid-way: you start in two services,
 find out a third needs a change, and finish in a fifth.
 
-![A task starts in billing-service and web-front and takes in infra; ls shows each repo's stage and the dev servers running from it; stop takes one down; done keeps the task until web-front ships, then asks before stopping the last server](docs/demo.svg)
+![A task starts in billing-service and web-front and takes in infra; ls, with two other tasks under way, shows a summary, the task that needs you first, each repo's stage and the dev servers running from it, and the task that shipped folded at the end; stop takes a server down; done sends the shipped task home, keeps this one until web-front ships, then asks before stopping the last server and sees it off](docs/demo.svg)
 
 ```
 root/                     ← your clones: fetch only, nobody works here
@@ -182,7 +182,8 @@ agents that read `SKILL.md` can copy that folder into their own skills directory
 Running several agents? The plugin's hooks record what the agent in each task is doing
 in `tasks/<task>/.agent`, and `ls` shows it: `working` after you send a prompt,
 `waiting` when it asks for a permission or an answer, `done` when its turn ends. The
-file goes away when the session ends. The hooks fire only on those events, never per
+file goes away when the session ends, and a session started at the root takes its state along as
+it moves from task to task. The hooks fire only on those events, never per
 tool call, so they cost nothing noticeable. A permission you just approved still
 shows `waiting` until the turn ends.
 
