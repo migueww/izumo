@@ -130,7 +130,12 @@ out=$("$IZ" ls feat-x) && ! grep -q 'ready' <<<"$out" || fail "ready with a file
 rmdir tasks/feat-x/notes
 says 'would remove feat-x' done feat-x --dry-run
 [ -d tasks/feat-x ] || fail "dry-run removed"
-iz done >/dev/null
+# a sweep checks every task's repos up front, then removes what shipped and keeps the rest
+iz new keeper b >/dev/null
+echo k > tasks/keeper/b/k && git -C tasks/keeper/b add k && git -C tasks/keeper/b commit -qm k
+iz done >/dev/null 2>&1
+[ -d tasks/keeper ] || fail "sweep removed a task that never shipped"
+iz rm keeper --discard >/dev/null 2>&1 || fail "rm keeper"
 [ ! -e tasks/feat-x ] || fail "task folder still there"
 ls tasks/.archive/*-feat-x.md >/dev/null || fail "TASK.md not archived"
 [ "$(git -C a worktree list | wc -l)" -eq 1 ] || fail "worktree metadata left"

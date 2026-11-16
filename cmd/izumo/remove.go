@@ -9,6 +9,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/term"
@@ -244,6 +245,9 @@ func removeTasks(mode string, args []string) error {
 		}
 		names = allTasks()
 	}
+	if len(names) > 1 {
+		checkAll(names)
+	}
 	kept, failed := false, false
 	for _, n := range names {
 		err := removeTask(mode, n, o.has("--dry-run"), o.has("--discard"), stop)
@@ -259,6 +263,46 @@ func removeTasks(mode string, args []string) error {
 		return errSaid
 	}
 	return nil
+}
+
+// checked: each repo's state, read up front for every task a command names. Checked one task at
+// a time, a sweep waits on a task's few repos before starting the next: 26 tasks took 40s where
+// ls --fetch, reading the same repos 8 at a time, took 14s.
+var checked sync.Map // "task/repo" -> checkResult
+
+type checkResult struct {
+	s   repoState
+	err error
+}
+
+// checkAll fetches the tasks' clones and reads all their repos at once, as ls does
+func checkAll(names []string) {
+	type job struct {
+		t    task
+		repo string
+	}
+	var jobs []job
+	var clones []string
+	seen := map[string]bool{}
+	for _, n := range names {
+		t, err := loadTask(n)
+		if err != nil {
+			continue // removeTask says so when it gets there
+		}
+		for _, r := range worktrees(n) {
+			jobs = append(jobs, job{t, r})
+			if !seen[r] {
+				seen[r] = true
+				clones = append(clones, r)
+			}
+		}
+	}
+	fetchAll(clones)
+	parallel(len(jobs), func(i int) bool {
+		s, err := stateOf(jobs[i].t, jobs[i].repo)
+		checked.Store(jobs[i].t.name+"/"+jobs[i].repo, checkResult{s, err})
+		return true
+	})
 }
 
 // removal: what removing a task would remove, lose and keep, before anything is touched
@@ -282,13 +326,12 @@ func planRemoval(mode string, t task, discard bool) (*removal, error) {
 	}
 	repos := worktrees(t.name)
 	fetchAll(repos)
-	type result struct {
-		s   repoState
-		err error
-	}
-	results := parallel(len(repos), func(i int) result {
+	results := parallel(len(repos), func(i int) checkResult {
+		if c, ok := checked.Load(t.name + "/" + repos[i]); ok {
+			return c.(checkResult)
+		}
 		s, err := stateOf(t, repos[i])
-		return result{s, err}
+		return checkResult{s, err}
 	})
 	shipped := false
 	for i, r := range repos {
