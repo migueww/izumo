@@ -8,6 +8,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"sync/atomic"
 )
 
 // addRepos puts repos in a task: on the task's branch, or with ref, detached on the base to be
@@ -117,6 +118,10 @@ func cmdNew(args []string) error {
 		if err := addRepos(name, repos, false, io.Discard); err != nil {
 			return err
 		}
+		// on stderr: stdout holds only the path, for cd "$(izumo new ...)"
+		if tty() {
+			fmt.Fprintf(os.Stderr, "%s %s gathered %s\n", paint(vermilion, "⛩"), paint(bold, name), strings.Join(repos, ", "))
+		}
 	}
 	fmt.Println(path.Join(tasksDir, name))
 	return nil
@@ -134,7 +139,14 @@ func cmdAdd(args []string) error {
 	if err != nil {
 		return err
 	}
-	return addRepos(name, o.args, o.has("--ref"), os.Stdout)
+	if err := addRepos(name, o.args, o.has("--ref"), os.Stdout); err != nil {
+		return err
+	}
+	// on stderr: stdout holds only the worktree paths
+	if tty() {
+		fmt.Fprintf(os.Stderr, "%s %s joined %s\n", paint(vermilion, "⛩"), strings.Join(o.args, ", "), paint(bold, name))
+	}
+	return nil
 }
 
 // adopt moves worktrees made by hand (or by another tool) into a task, creating it if needed
@@ -405,7 +417,7 @@ func cmdRun(args []string) error {
 		if t.isRef(r) { // there to be read: tests and builds belong to the repos the task changes
 			continue
 		}
-		fmt.Println("== " + r)
+		fmt.Println(paint(vermilion, "== ") + paint(bold, r))
 		if inWt(t.name, r, os.Stdout, args...) != nil {
 			failed = append(failed, r)
 		}
@@ -450,6 +462,19 @@ func pullOne(repo string) string {
 	return "updated " + br
 }
 
+// pullColor: what moved green, what was already current dim, what failed red, what was left yellow
+func pullColor(r string) string {
+	switch {
+	case strings.HasPrefix(r, "updated"), strings.HasPrefix(r, "moved to"):
+		return green
+	case r == "up to date":
+		return dim
+	case r == "fetch failed", strings.HasPrefix(r, "could not"):
+		return red
+	}
+	return yellow
+}
+
 // pull brings the root's clones up to date, and the tasks' references to their base, so code
 // read there is current
 func cmdPull(repos []string) error {
@@ -464,7 +489,10 @@ func cmdPull(repos []string) error {
 	if len(repos) == 0 {
 		repos = allClones()
 	}
-	res := parallel(len(repos), func(i int) string { return pullOne(repos[i]) })
+	var pulled atomic.Int32
+	stop := gather("pulling", &pulled, len(repos))
+	res := parallel(len(repos), func(i int) string { defer pulled.Add(1); return pullOne(repos[i]) })
+	stop()
 	names, failed := append([]string{}, repos...), false
 	for _, r := range res {
 		failed = failed || r == "fetch failed"
@@ -485,7 +513,7 @@ func cmdPull(repos []string) error {
 		w = max(w, len(n))
 	}
 	for i, n := range names {
-		fmt.Printf("%-*s  %s\n", w, n, res[i])
+		fmt.Printf("%-*s  %s\n", w, n, paint(pullColor(res[i]), res[i]))
 	}
 	if failed {
 		return errSaid

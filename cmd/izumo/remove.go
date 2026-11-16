@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/term"
@@ -248,16 +249,30 @@ func removeTasks(mode string, args []string) error {
 	if len(names) > 1 {
 		checkAll(names)
 	}
-	kept, failed := false, false
+	// a sweep on a terminal keeps quiet about the tasks still in progress and ends with a count;
+	// izumo ls says why each one stays
+	sweep := !named && tty()
+	kept, failed, gone, stay := false, false, 0, 0
 	for _, n := range names {
-		err := removeTask(mode, n, o.has("--dry-run"), o.has("--discard"), stop)
+		err := removeTask(mode, n, o.has("--dry-run"), o.has("--discard"), stop, sweep)
 		switch {
 		case errors.Is(err, errKept):
 			kept = true
+			stay++
 		case err != nil:
 			say("%v", err)
 			failed = true
+		default:
+			gone++
 		}
+	}
+	if sweep && len(names) > 0 {
+		verb := "went home"
+		if o.has("--dry-run") {
+			verb = "would go home"
+		}
+		fmt.Printf("%s %s %s\n", paint(vermilion, "⛩"), paint(green, fmt.Sprintf("%d %s", gone, verb)),
+			paint(dim, fmt.Sprintf("· %d stay, izumo ls says why", stay)))
 	}
 	if failed || named && kept {
 		return errSaid
@@ -298,7 +313,10 @@ func checkAll(names []string) {
 		}
 	}
 	fetchAll(clones)
+	var n atomic.Int32
+	defer gather("checking", &n, len(jobs))()
 	parallel(len(jobs), func(i int) bool {
+		defer n.Add(1)
 		s, err := stateOf(jobs[i].t, jobs[i].repo)
 		checked.Store(jobs[i].t.name+"/"+jobs[i].repo, checkResult{s, err})
 		return true
@@ -314,6 +332,7 @@ type removal struct {
 	why      []string             // what keeps the task
 	discard  bool
 	resuming bool // an earlier removal stopped halfway
+	done     bool // izumo done: every repo shipped
 }
 
 // planRemoval: done wants every repo in prod (or untouched) and nothing lost; rm wants nothing
@@ -324,6 +343,7 @@ func planRemoval(mode string, t task, discard bool) (*removal, error) {
 	if p.resuming = exists(path.Join(p.dir, ".removing")); p.resuming {
 		mode = "rm"
 	}
+	p.done = mode == "done"
 	repos := worktrees(t.name)
 	fetchAll(repos)
 	results := parallel(len(repos), func(i int) checkResult {
@@ -372,7 +392,7 @@ func planRemoval(mode string, t task, discard bool) (*removal, error) {
 	return p, nil
 }
 
-func removeTask(mode, name string, dry, discard bool, stop stopMode) error {
+func removeTask(mode, name string, dry, discard bool, stop stopMode, sweep bool) error {
 	t, err := loadTask(name)
 	if err != nil {
 		return err
@@ -394,7 +414,9 @@ func removeTask(mode, name string, dry, discard bool, stop stopMode) error {
 		}
 	}
 	if len(p.why) > 0 {
-		say("%s: kept (%s)", name, strings.Join(p.why, "; "))
+		if !sweep {
+			say("%s: kept (%s)", name, strings.Join(p.why, "; "))
+		}
 		return errKept
 	}
 	if dry {
@@ -454,6 +476,16 @@ func (p *removal) apply() error {
 	}
 	if os.RemoveAll(dir) != nil {
 		return fmt.Errorf("%s: worktrees and branches are gone, but the folder is in use; delete %s once nothing has it open", name, dir)
+	}
+	// done on a terminal sees the task off: its repos shipped and, like the gods leaving Izumo, went home
+	if p.done && tty() {
+		shipped := 0
+		for _, s := range p.states {
+			shipped += b2i(s.stage == stageProd)
+		}
+		fmt.Printf("%s %s went home %s\n", paint(vermilion, "⛩"), paint(bold, name),
+			paint(dim, fmt.Sprintf("(%d shipped, TASK.md archived)", shipped)))
+		return nil
 	}
 	fmt.Printf("removed %s\n", name)
 	return nil

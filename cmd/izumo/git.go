@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 func gitCmd(dir string, args ...string) *exec.Cmd {
@@ -84,7 +85,9 @@ func fetch(clone string) bool {
 
 // fetchAll fetches the root's clones of these repos in parallel
 func fetchAll(repos []string) {
-	parallel(len(repos), func(i int) bool { return fetch(path.Join(root, repos[i])) })
+	var n atomic.Int32
+	defer gather("fetching", &n, len(repos))()
+	parallel(len(repos), func(i int) bool { defer n.Add(1); return fetch(path.Join(root, repos[i])) })
 }
 
 // baseRef: origin/<branch> work starts from: task base, else BASE, else origin's default branch.

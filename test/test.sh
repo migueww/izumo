@@ -100,7 +100,9 @@ iz new feat-x a >/dev/null
 [ "$(git -C tasks/feat-x/a rev-parse HEAD)" = "$(git -C a rev-parse origin/hml)" ] || fail "not based on hml"
 grep -q 'feat-x a' hook.log || fail "post_add hook"
 for f in TASK.md AGENTS.md CLAUDE.md feat-x.code-workspace; do [ -f "tasks/feat-x/$f" ] || fail "missing $f"; done
-(cd tasks/feat-x/a && iz add b >/dev/null)
+# add on a terminal says what joined, on stderr: stdout stays the worktree paths
+(cd tasks/feat-x/a && IZUMO_COLOR=1 NO_COLOR=1 "$IZ" add b >/dev/null 2>"$T/err") && grep -qxF '⛩ b joined feat-x' "$T/err" ||
+  fail "add on a terminal: $(cat "$T/err")"
 grep -q '"path": "b"' tasks/feat-x/feat-x.code-workspace || fail "workspace misses b"
 refuses 'a is already in task' add a --task feat-x
 
@@ -115,8 +117,14 @@ git -C tasks/feat-x/a push -q origin feat-x
 jsays 'feat-x/a repo="a" branch="feat-x" stage="pushed"'
 jsays 'feat-x/b repo="b" branch="feat-x" stage="empty"'
 # colors only when asked (the shim asks on a terminal), and NO_COLOR wins
-out=$(IZUMO_COLOR=1 "$IZ" ls feat-x) && grep -qF $'\e[33mpushed' <<<"$out" || fail "no color with IZUMO_COLOR=1: $out"
-out=$(IZUMO_COLOR=1 NO_COLOR=1 "$IZ" ls feat-x) && ! grep -qF $'\e[' <<<"$out" || fail "color despite NO_COLOR: $out"
+out=$(IZUMO_COLOR=1 "$IZ" ls feat-x 2>/dev/null) && grep -qF $'\e[33mpushed' <<<"$out" || fail "no color with IZUMO_COLOR=1: $out"
+out=$(IZUMO_COLOR=1 NO_COLOR=1 "$IZ" ls feat-x 2>/dev/null) && ! grep -qF $'\e[' <<<"$out" || fail "color despite NO_COLOR: $out"
+# on a terminal a long goal is cut at the width; piped it stays whole
+printf '# feat-x\n\n## Goal\nship the whole thing to everyone today\n' > tasks/feat-x/TASK.md
+out=$(IZUMO_COLOR=1 NO_COLOR=1 COLUMNS=30 "$IZ" ls feat-x 2>/dev/null) && grep -qxF 'feat-x  ship the whole thing …' <<<"$out" ||
+  fail "goal not cut at the width: $out"
+grep -qx '  empty: b' <<<"$out" || fail "empty repo not folded on a terminal: $out"
+says 'feat-x  ship the whole thing to everyone today' ls feat-x
 
 # done waits for prod: merge-commit flow
 dev fetch -q && dev merge -q --no-ff origin/feat-x -m merge && dev push -q origin hml
@@ -125,29 +133,48 @@ out=$("$IZ" ls feat-x) && ! grep -q 'ready' <<<"$out" || fail "ready before prod
 promote
 says 'feat-x  [ready: izumo done]' ls --fetch feat-x
 jsays 'ready=true' feat-x
+# on a terminal, tasks done would take fold into one line each under a heading; one named keeps its rows
+out=$(IZUMO_COLOR=1 NO_COLOR=1 "$IZ" ls 2>/dev/null) && grep -qxF '⛩ ready to go home (1) · izumo done' <<<"$out" &&
+  grep -qx '  feat-x' <<<"$out" || fail "ready task not folded on a terminal: $out"
+out=$(IZUMO_COLOR=1 NO_COLOR=1 "$IZ" ls feat-x 2>/dev/null) && grep -qF 'feat-x  [ready: izumo done]' <<<"$out" ||
+  fail "a task named on a terminal got folded: $out"
 mkdir tasks/feat-x/notes  # a file done would keep the task for: not ready either
 out=$("$IZ" ls feat-x) && ! grep -q 'ready' <<<"$out" || fail "ready with a file done keeps the task for: $out"
 rmdir tasks/feat-x/notes
 says 'would remove feat-x' done feat-x --dry-run
 [ -d tasks/feat-x ] || fail "dry-run removed"
-# a sweep checks every task's repos up front, then removes what shipped and keeps the rest
+# a sweep checks every task's repos up front, removes what shipped and keeps the rest; on a
+# terminal it sees each one off and ends with a count
 iz new keeper b >/dev/null
 echo k > tasks/keeper/b/k && git -C tasks/keeper/b add k && git -C tasks/keeper/b commit -qm k
-iz done >/dev/null 2>&1
+out=$(IZUMO_COLOR=1 NO_COLOR=1 "$IZ" done 2>/dev/null) && grep -qxF '⛩ feat-x went home (1 shipped, TASK.md archived)' <<<"$out" &&
+  grep -qxF '⛩ 1 went home · 1 stay, izumo ls says why' <<<"$out" || fail "sweep on a terminal: $out"
 [ -d tasks/keeper ] || fail "sweep removed a task that never shipped"
 iz rm keeper --discard >/dev/null 2>&1 || fail "rm keeper"
 [ ! -e tasks/feat-x ] || fail "task folder still there"
 ls tasks/.archive/*-feat-x.md >/dev/null || fail "TASK.md not archived"
 [ "$(git -C a worktree list | wc -l)" -eq 1 ] || fail "worktree metadata left"
 git -C a show-ref --quiet refs/heads/feat-x && fail "branch not deleted"
+out=$(IZUMO_COLOR=1 NO_COLOR=1 "$IZ" ls 2>/dev/null) && grep -qF 'the shrine is quiet' <<<"$out" || fail "no word when there are no tasks: $out"
+[ -z "$("$IZ" ls)" ] || fail "piped ls with no tasks printed something"
 
 # squash flow: only gh knows the PR shipped; remote branch deleted and pruned
-iz new feat-y a >/dev/null
+# new on a terminal says what gathered, on stderr: stdout stays the path alone
+out=$(IZUMO_COLOR=1 NO_COLOR=1 "$IZ" new feat-y a 2>"$T/err") && [ "${out##*/}" = feat-y ] && [ "$(wc -l <<<"$out")" -eq 1 ] &&
+  grep -qxF '⛩ feat-y gathered a' "$T/err" || fail "new on a terminal: $out / $(cat "$T/err")"
 echo y > tasks/feat-y/a/y && git -C tasks/feat-y/a add y && git -C tasks/feat-y/a commit -qm y
+# on a terminal: a summary, and the tasks that need you first (feat-y has a commit only here)
+iz new aaa >/dev/null
+out=$(IZUMO_COLOR=1 NO_COLOR=1 "$IZ" ls 2>/dev/null) && grep -qxF '⛩ 2 open · 1 need you' <<<"$out" &&
+  [ "$(grep -o '^[a-z-]*' <<<"$out" | head -1)" = feat-y ] || fail "feat-y, which needs you, not first: $out"
+iz rm aaa >/dev/null
 git -C tasks/feat-y/a push -q origin feat-y
 head=$(git -C tasks/feat-y/a rev-parse HEAD)
 FAKE_PR=$(pr https://x/pull/1 OPEN "" "$head" CHANGES_REQUESTED FAILURE) IZUMO_GH=$GHFAKE \
   says 'pr     changes-requested ci:failing https://x/pull/1' ls feat-y
+# a terminal that shows links gets #1 opening the PR
+out=$(FAKE_PR=$(pr https://x/pull/1 OPEN "" "$head" "" "") IZUMO_GH=$GHFAKE IZUMO_COLOR=1 "$IZ" ls feat-y 2>/dev/null) &&
+  grep -qF $'\e]8;;https://x/pull/1\e\\#1\e]8;;\e\\' <<<"$out" || fail "PR not a #1 link on a terminal: $out"
 FAKE_PR=$(pr https://x/pull/1 OPEN "" "$head" "" "") IZUMO_GH=$GHFAKE \
   jsays 'stage="pr" dirty=false modified=0 untracked=0 unpushed=0 pr="https://x/pull/1" review="" ci="" conflict=false' feat-y
 FAKE_PR=$(pr https://x/pull/1 OPEN "" "$head" "" "" CONFLICTING) IZUMO_GH=$GHFAKE \
@@ -241,7 +268,8 @@ iz rm mixed >/dev/null || fail "rm mixed"
 # bare izumo: ls inside a root, usage outside
 iz new bare a >/dev/null
 out=$("$IZ") && grep -q '^bare' <<<"$out" || fail "bare izumo inside a root: $out"
-out=$(cd "$T" && "$IZ") && grep -q 'izumo new' <<<"$out" || fail "bare izumo outside a root: $out"
+out=$(cd "$T" && "$IZ" 2>/dev/null) && grep -q 'izumo new' <<<"$out" || fail "bare izumo outside a root: $out"
+out=$(cd "$T" && "$IZ" 2>&1 >/dev/null) && grep -qF 'no .izumo here or above' <<<"$out" || fail "bare izumo outside a root doesn't say why: $out"
 
 # agent state from the Claude Code hooks: written inside a task, silent anywhere else
 (cd tasks/bare/a && iz _agent waiting)
@@ -340,6 +368,17 @@ iz rm tpl >/dev/null || fail "rm tpl"
 # help: -h works after any command, but after run it belongs to the command
 says 'izumo new <task>' new --help
 says 'izumo ls' ls x -h
+out=$("$IZ" ls -h) && ! grep -q 'izumo new' <<<"$out" && grep -qF 'izumo -h for every command' <<<"$out" ||
+  fail "ls -h shows more than ls: $out"
+out=$(IZUMO_COLOR=1 NO_COLOR=1 "$IZ" -h) && grep -q '^⛩ izumo' <<<"$out" && grep -q '^finish  izumo done' <<<"$out" ||
+  fail "help on a terminal: $out"
+refuses 'unknown command "lss"; did you mean ls?' lss
+refuses 'unknown command "deploy"; izumo -h lists them' deploy
+refuses 'unknown command "-s"; izumo -h lists them' -s  # a flag is no typo of a command (-s is not ls)
+says 'izumo ' version
+says 'izumo ' -v
+out=$("$IZ" help ls) && grep -q 'izumo ls' <<<"$out" && ! grep -q 'izumo new' <<<"$out" || fail "help ls: $out"
+out=$("$IZ" --json) && "$PY" -c 'import json, sys; json.load(sys.stdin)' <<<"$out" || fail "izumo --json is not ls --json: $out"
 
 # run: in each repo, in order, with the hook variables; fails if any repo failed
 iz new runner a b >/dev/null
@@ -422,6 +461,8 @@ echo 2 > c/f
 git -C "$T/dev/c" commit -q --allow-empty -m g && git -C "$T/dev/c" push -q origin main
 says 'fetched (main has local changes)' pull c
 says 'up to date' pull a
+# on a terminal each result takes the color of what it means
+out=$(IZUMO_COLOR=1 "$IZ" pull a 2>/dev/null) && grep -qF $'\e[2mup to date' <<<"$out" || fail "pull result not colored: $out"
 refuses 'no git clone' pull nope
 
 # --ref: a repo the task only reads, detached on its base: no branch, no post_add
@@ -507,5 +548,17 @@ says 'nothing serving in paused' stop --task paused
 refuses 'nope is not in task' stop nope --task paused
 for _ in 1 2 3 4 5; do iz rm paused >/dev/null 2>&1 && break; sleep 1; done  # Windows: the server's shell lets go
 [ ! -e tasks/paused ] || fail "rm paused"
+
+# a message while the bar is up starts a line of its own, not at the end of the bar
+for r in slow1 slow2; do
+  git init -q -b main "$r" && git -C "$r" commit -q --allow-empty -m init && git -C "$r" config protocol.ext.allow always
+  git -C "$r" update-ref refs/remotes/origin/main HEAD && git -C "$r" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+done
+git -C slow1 remote add origin "ext::sh -c 'sleep 1; exit 1'"  # fails while slow2 still fetches
+git -C slow2 remote add origin "ext::sh -c 'sleep 2; exit 1'"
+iz new slow slow1 slow2 >/dev/null 2>&1
+out=$(IZUMO_COLOR=1 NO_COLOR=1 "$IZ" ls --fetch slow 2>&1 >/dev/null) && grep -qF 'slow1: fetch failed' <<<"$out" &&
+  ! grep -q '[0-9]izumo:' <<<"$out" || fail "a message ran into the bar: $out"
+iz rm slow >/dev/null 2>&1 && rm -rf slow1 slow2 || fail "rm slow"
 
 echo ok

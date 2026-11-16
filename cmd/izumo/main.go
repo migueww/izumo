@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -23,29 +24,110 @@ func versionString() string {
 	return version
 }
 
-const usage = `izumo: one folder per task, one git worktree per repo
+// helpLines: the commands by when a task needs them, each as {group, command, synopsis, what it does}
+var helpLines = [][4]string{
+	{"start", "new", "izumo new <task> [repo...] [--branch B] [--base BRANCH]", ""},
+	{"", "add", "izumo add <repo...> [--task T] [--ref]", "--ref: a repo the task only reads"},
+	{"", "adopt", "izumo adopt <worktree...> [--task T]", "move existing worktrees into a task"},
+	{"see", "ls", "izumo ls [task...] [--json] [--fetch]", "plain izumo runs it"},
+	{"work", "run", "izumo run [--task T] [--] <command...>", "run a command in each repo of a task"},
+	{"", "pull", "izumo pull [repo...]", "fetch the root's clones, fast-forward the clean ones"},
+	{"", "base", "izumo base <branch> [--task T]", "change the branch a task is based on"},
+	{"", "mv", "izumo mv <task> <new-name>", "rename a task (branches keep their names)"},
+	{"", "drop", "izumo drop <repo...> [--task T]", "take repos out of a task, keeping the task"},
+	{"", "stop", "izumo stop [repo...] [--task T] [--dry-run]", "stop a task's dev servers, keeping the task"},
+	{"finish", "done", "izumo done [task...] [--dry-run]", "remove the tasks whose repos all shipped"},
+	{"", "rm", "izumo rm <task...> [--dry-run] [--discard]", "--discard: even losing changes and commits"},
+}
 
-  izumo                                    same as izumo ls
-  izumo new <task> [repo...] [--branch B] [--base BRANCH]
-  izumo add <repo...> [--task T] [--ref]   --ref: a repo the task only reads
-  izumo drop <repo...> [--task T]          take repos out of a task, keeping the task
-  izumo adopt <worktree...> [--task T]     move existing worktrees into a task
-  izumo mv <task> <new-name>               rename a task (branches keep their names)
-  izumo base <branch> [--task T]           change the branch a task is based on
-  izumo ls [task...] [--json] [--fetch]
-  izumo done [task...] [--dry-run]
-  izumo rm <task...> [--dry-run] [--discard]   --discard: even losing changes and commits
-      done, rm and drop stop the task's dev servers after asking; --stop / --no-stop answer ahead
-  izumo stop [repo...] [--task T] [--dry-run]   stop a task's dev servers, keeping the task
-  izumo run [--task T] [--] <command...>   run a command in each repo of a task
-  izumo pull [repo...]                     fetch the root's clones, fast-forward the clean ones
+// help: every command, or only cmd's with a pointer to the rest. On a terminal, the torii and
+// colors; piped, the same text plain.
+func help(cmd string) string {
+	var b strings.Builder
+	if tty() {
+		fmt.Fprintf(&b, "%s %s  one folder per task, one git worktree per repo\n\n", paint(vermilion, "⛩"), paint(bold, "izumo"))
+	} else {
+		b.WriteString("izumo: one folder per task, one git worktree per repo\n\n")
+	}
+	// the group column only when every command shows; descriptions line up past the longest synopsis
+	var shown [][4]string
+	gw, sw := 8, 0
+	for _, l := range helpLines {
+		if cmd == "" || l[1] == cmd {
+			shown = append(shown, l)
+			if l[3] != "" {
+				sw = max(sw, len(l[2]))
+			}
+		}
+	}
+	if cmd != "" {
+		gw = 2
+	}
+	stops := false
+	for _, l := range shown {
+		group, syn := l[0], l[2]
+		if cmd != "" {
+			group = ""
+		}
+		if l[3] != "" {
+			syn = fmt.Sprintf("%-*s  %s", sw, syn, paint(dim, l[3]))
+		}
+		fmt.Fprintf(&b, "%s%s\n", paint(vermilion, fmt.Sprintf("%-*s", gw, group)), syn)
+		stops = stops || l[1] == "done" || l[1] == "rm" || l[1] == "drop"
+	}
+	if stops {
+		b.WriteString(strings.Repeat(" ", gw) + paint(dim, "done, rm and drop stop the task's dev servers after asking; --stop / --no-stop answer ahead") + "\n")
+	}
+	if cmd != "" {
+		b.WriteString("\n" + paint(dim, "izumo -h for every command") + "\n")
+	} else {
+		b.WriteString("\nRun it anywhere under your multi-repo root, the folder holding a .izumo file.\n")
+	}
+	return b.String()
+}
 
-Run it anywhere under your multi-repo root, the folder holding a .izumo file.
-`
+// suggest: the command a typo meant, when one is an edit away (two for the longer names)
+func suggest(typo string) string {
+	best, bd := "", 3
+	for _, c := range slices.Sorted(maps.Keys(commands)) {
+		if d := distance(typo, c); d < bd && (d == 1 || len(c) >= 4) {
+			best, bd = c, d
+		}
+	}
+	return best
+}
+
+// distance: the edits that turn a into b: insert, delete, change, or swap two neighbors (nwe, sl)
+func distance(a, b string) int {
+	d := make([][]int, len(a)+1)
+	for i := range d {
+		d[i] = make([]int, len(b)+1)
+		d[i][0] = i
+	}
+	for j := range d[0] {
+		d[0][j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		for j := 1; j <= len(b); j++ {
+			d[i][j] = min(d[i-1][j]+1, d[i][j-1]+1, d[i-1][j-1]+b2i(a[i-1] != b[j-1]))
+			if i > 1 && j > 1 && a[i-1] == b[j-2] && a[i-2] == b[j-1] {
+				d[i][j] = min(d[i][j], d[i-2][j-2]+1)
+			}
+		}
+	}
+	return d[len(a)][len(b)]
+}
 
 var windows = runtime.GOOS == "windows"
 
-func say(format string, a ...any) { fmt.Fprintf(os.Stderr, "izumo: "+format+"\n", a...) }
+func say(format string, a ...any) {
+	stderrMu.Lock()
+	defer stderrMu.Unlock()
+	if barUp {
+		fmt.Fprint(os.Stderr, "\r\x1b[K") // the bar draws itself again on its next tick
+	}
+	fmt.Fprintf(os.Stderr, "izumo: "+format+"\n", a...)
+}
 
 // errSaid: the command already told why it stopped; exit 1 without saying more
 var errSaid = errors.New("said")
@@ -71,26 +153,39 @@ func run(args []string) int {
 		return 0
 	case "":
 		if _, err := findRoot(); err != nil && os.Getenv("IZUMO_ROOT") == "" {
-			fmt.Print(usage)
+			say("no .izumo here or above; put one in the folder that holds your clones")
+			fmt.Print(help(""))
 			return 0
 		}
 		cmd = "ls"
-	case "--version":
+	case "--json", "--fetch": // plain izumo is ls, flags and all
+		cmd, args = "ls", append([]string{cmd}, args...)
+	case "--version", "-v", "version":
 		fmt.Println("izumo " + versionString())
 		return 0
 	case "-h", "--help", "help":
-		fmt.Print(usage)
+		// izumo help ls: the same as izumo ls -h
+		if len(args) > 0 && commands[args[0]] != nil {
+			fmt.Print(help(args[0]))
+		} else {
+			fmt.Print(help(""))
+		}
 		return 0
 	}
 	f, ok := commands[cmd]
 	if !ok {
-		fmt.Fprint(os.Stderr, usage)
+		// a flag is no typo of a command: -v is not mv
+		if s := suggest(cmd); s != "" && !strings.HasPrefix(cmd, "-") {
+			say("unknown command %q; did you mean %s?", cmd, s)
+		} else {
+			say("unknown command %q; izumo -h lists them", cmd)
+		}
 		return 2
 	}
 	// -h anywhere asks for help, except after run, where the rest is the command's own
 	for i, a := range args {
 		if (a == "-h" || a == "--help") && (cmd != "run" || i == 0) {
-			fmt.Print(usage)
+			fmt.Print(help(cmd))
 			return 0
 		}
 	}
