@@ -252,6 +252,16 @@ CLAUDE_PROJECT_DIR="$T/root/tasks/bare" iz _agent working
 says '[agent working' ls bare
 (cd tasks/bare && iz _agent end)
 [ ! -e tasks/bare/.agent ] || fail "_agent end left .agent"
+# a session that moves on clears what it left in the task: its Stop, sent from elsewhere, can't
+hook() { printf '{"session_id":"%s","hook_event_name":"x"}' "$2" | (cd "$3" && "$IZ" _agent "$1"); }
+hook working s1 tasks/bare/a
+grep -q '^working [0-9]* s1$' tasks/bare/.agent || fail "_agent without the session: $(cat tasks/bare/.agent)"
+hook done s1 .
+[ ! -e tasks/bare/.agent ] || fail "a session that left the task left its state there"
+hook working s2 tasks/bare/a
+hook done s1 .
+grep -q ' s2$' tasks/bare/.agent || fail "another session's state was cleared"
+hook end s2 tasks/bare
 
 # the session hook: inside a root it points the agent at izumo ls, anywhere else it says nothing
 out=$(cd tasks/bare/a && iz _context) && "$PY" -c 'import json, sys
