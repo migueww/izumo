@@ -4,7 +4,7 @@
 # https://github.com/migueww/izumo (MIT)
 set -euo pipefail
 
-VERSION=1.4.5
+VERSION=1.5.0
 RELEASES=${IZUMO_RELEASES:-https://github.com/migueww/izumo/releases/download}
 
 # the binary reads .izumo with bash: this one, not whatever bash PATH holds (WSL's, on Windows)
@@ -15,6 +15,8 @@ if [ -z "${IZUMO_TTY:-}" ]; then
   if [ -t 0 ]; then export IZUMO_TTY=1; else export IZUMO_TTY=0; fi
 fi
 if [ -t 1 ] && [ -z "${IZUMO_COLOR:-}" ]; then export IZUMO_COLOR=1; fi
+# and how wide that terminal is, so ls cuts long goals there
+if [ -t 1 ] && [ -z "${COLUMNS:-}" ]; then COLUMNS=$(tput cols 2>/dev/null || true); export COLUMNS; fi
 
 case $(uname -s) in
   Linux) os=linux;;

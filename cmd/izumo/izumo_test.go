@@ -42,3 +42,12 @@ func TestTaskFileQuoting(t *testing.T) {
 		}
 	}
 }
+
+func TestSuggest(t *testing.T) {
+	// a typo an edit away, or two for the longer names; nothing when no command is close
+	for typo, want := range map[string]string{"lss": "ls", "sl": "ls", "nwe": "new", "dne": "done", "adpot": "adopt", "xx": "", "deploy": ""} {
+		if got := suggest(typo); got != want {
+			t.Errorf("suggest(%q) = %q, want %q", typo, got, want)
+		}
+	}
+}

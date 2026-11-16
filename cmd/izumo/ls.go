@@ -6,9 +6,11 @@ import (
 	"io"
 	"os"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/term"
@@ -113,7 +115,10 @@ func cmdLs(args []string) error {
 		}
 		srvc <- servers()
 	}()
+	var read atomic.Int32
+	stop := gather("gathering", &read, len(jobs))
 	states := parallel(len(jobs), func(i int) repoState {
+		defer read.Add(1)
 		s, err := stateOf(jobs[i].t, jobs[i].repo)
 		if err != nil {
 			say("%v", err)
@@ -122,6 +127,7 @@ func cmdLs(args []string) error {
 		return s
 	})
 	srv := <-srvc
+	stop()
 
 	list := make([]lsTask, 0, len(tasks))
 	k := 0
@@ -164,48 +170,200 @@ func cmdLs(args []string) error {
 		e.SetIndent("", "  ")
 		return e.Encode(list)
 	}
-	agentColor := map[string]string{"working": cyan, "waiting": yellow, "done": dim}
+	printLs(list, len(o.args) == 0)
+	return nil
+}
+
+// printLs: on a terminal it reads at a glance: a summary, the tasks that need you first, quiet
+// repos folded into one line, goals cut at the width and the tasks done would take at the end,
+// one line each. Piped, every task keeps its rows, order and whole goal, for scripts. Tasks asked
+// for by name keep their rows too: whoever names one wants to see it.
+func printLs(list []lsTask, all bool) {
+	if len(list) == 0 {
+		if tty() {
+			fmt.Printf("%s the shrine is quiet. Start a task: izumo new <task> <repo...>\n", paint(vermilion, "⛩"))
+		}
+		return
+	}
+	var open, ready []lsTask
+	need, serving := 0, 0
 	for _, t := range list {
-		fmt.Print(paint(bold, t.Task))
-		if t.Ready {
-			fmt.Print("  " + paint(green, "[ready: izumo done]"))
+		if t.Ready && tty() && all {
+			ready = append(ready, t)
+		} else {
+			open = append(open, t)
+			need += b2i(needsYou(t))
 		}
-		if t.Agent != nil {
-			fmt.Print("  " + paint(agentColor[t.Agent.State], fmt.Sprintf("[agent %s %s]", t.Agent.State, ago(t.Agent.Since))))
-		}
-		if t.Removing {
-			fmt.Print("  " + paint(red, fmt.Sprintf("[removal stopped halfway: izumo rm %s]", t.Task)))
-		}
-		fmt.Printf("  %s\n", t.Goal)
 		for _, r := range t.Repos {
-			flags := ""
-			for _, f := range [][2]string{{"modified", strconv.Itoa(r.Modified)}, {"untracked", strconv.Itoa(r.Untracked)}, {"unpushed", strconv.Itoa(r.Unpushed)}} {
-				if f[1] != "0" {
-					flags += " " + paint(flagColor[f[0]], f[1]+"-"+f[0])
-				}
-			}
-			if r.Review != "" {
-				flags += " " + paint(flagColor[r.Review], r.Review)
-			}
-			if r.CI != "" {
-				flags += " " + paint(flagColor["ci:"+r.CI], "ci:"+r.CI)
-			}
-			if r.Conflict {
-				flags += " " + paint(red, "conflict")
-			}
-			// each server with how long it has been up: a forgotten one shows its days
-			for _, v := range r.Servers {
-				flags += " " + paint(cyan, "serving:"+portLinks(v.Ports)) + " " + paint(dim, "("+ago(v.Since)+")")
-			}
-			if r.Behind > 0 {
-				flags += " " + paint(yellow, strconv.Itoa(r.Behind)+"-behind")
-			}
-			// padded before painting, so the columns line up with or without color
-			fmt.Printf("  %s %s %s%s %s\n", fmt.Sprintf("%-32s", r.Repo), paint(dim, fmt.Sprintf("%-36s", r.Branch)),
-				paint(stageColor[r.Stage], fmt.Sprintf("%-6s", r.Stage)), flags, paint(dim, r.PR))
+			serving += len(r.Servers)
 		}
 	}
-	return nil
+	if tty() {
+		slices.SortStableFunc(open, func(a, b lsTask) int { return b2i(needsYou(b)) - b2i(needsYou(a)) })
+		if all && len(list) > 1 {
+			sum := []string{fmt.Sprintf("%d open", len(open))}
+			if need > 0 {
+				sum = append(sum, paint(red, fmt.Sprintf("%d need you", need)))
+			}
+			if len(ready) > 0 {
+				sum = append(sum, paint(green, fmt.Sprintf("%d going home", len(ready))))
+			}
+			if serving > 0 {
+				sum = append(sum, paint(cyan, fmt.Sprintf("%d servers up", serving)))
+			}
+			fmt.Printf("%s %s\n\n", paint(vermilion, "⛩"), strings.Join(sum, paint(dim, " · ")))
+		}
+	}
+	// columns as wide as the longest repo and branch shown, so long names don't shift the rest
+	rw, bw := 0, 0
+	for _, t := range open {
+		for _, r := range t.Repos {
+			if !quiet(r) {
+				rw, bw = max(rw, len(r.Repo)), max(bw, len(r.Branch))
+			}
+		}
+	}
+	for i, t := range open {
+		if i > 0 && tty() {
+			fmt.Println()
+		}
+		head, n := paint(bold, t.Task), len(t.Task)
+		tag := func(code, s string) { head += "  " + paint(code, s); n += 2 + len(s) }
+		if t.Ready {
+			tag(green, "[ready: izumo done]")
+		}
+		if t.Agent != nil {
+			tag(agentTag(t))
+		}
+		if t.Removing {
+			tag(red, fmt.Sprintf("[removal stopped halfway: izumo rm %s]", t.Task))
+		}
+		fmt.Printf("%s  %s\n", head, clip(t.Goal, width()-n-2))
+		folded := map[stage][]string{}
+		for _, r := range t.Repos {
+			if quiet(r) {
+				folded[r.Stage] = append(folded[r.Stage], r.Repo)
+			} else {
+				fmt.Println(repoLine(r, rw, bw))
+			}
+		}
+		for _, s := range []stage{stageEmpty, stageRef} {
+			if len(folded[s]) > 0 {
+				fmt.Println("  " + paint(dim, clip(string(s)+": "+strings.Join(folded[s], ", "), width()-2)))
+			}
+		}
+	}
+	if len(ready) > 0 {
+		if len(open) > 0 {
+			fmt.Println()
+		}
+		// the gathering is over for these: like the gods leaving Izumo, they go home
+		fmt.Printf("%s %s %s\n", paint(vermilion, "⛩"), paint(green, fmt.Sprintf("ready to go home (%d)", len(ready))),
+			paint(dim, "· izumo done"))
+		for _, t := range ready {
+			head := paint(bold, t.Task)
+			if t.Agent != nil {
+				code, s := agentTag(t)
+				head += "  " + paint(code, s)
+			}
+			for _, r := range t.Repos {
+				if s := servingFlags(r); s != "" {
+					head += " " + s
+				}
+			}
+			fmt.Println("  " + head)
+		}
+	}
+}
+
+// needsYou: the task waits on you, not on others: changes asked in review, failing CI, a
+// conflict, commits only here, an agent asking, or a removal stopped halfway
+func needsYou(t lsTask) bool {
+	if t.Removing || (t.Agent != nil && t.Agent.State == "waiting") {
+		return true
+	}
+	for _, r := range t.Repos {
+		if r.Review == "changes-requested" || r.CI == "failing" || r.Conflict || r.Unpushed > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// quiet: a repo with nothing to show beyond its stage, which a terminal folds into one line per
+// stage. Only on a terminal: piped, every repo keeps its row.
+func quiet(r lsRepo) bool {
+	return tty() && (r.Stage == stageEmpty || r.Stage == stageRef) &&
+		r.Modified+r.Untracked+r.Unpushed+r.Behind == 0 && len(r.Servers) == 0
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// agentTag: what the task's agent is doing, and its color
+func agentTag(t lsTask) (code, s string) {
+	return map[string]string{"working": cyan, "waiting": yellow, "done": dim}[t.Agent.State],
+		fmt.Sprintf("[agent %s %s]", t.Agent.State, ago(t.Agent.Since))
+}
+
+// clip: s cut to n columns with an ellipsis; whole when the width is unknown
+func clip(s string, n int) string {
+	r := []rune(s)
+	if width() == 0 || len(r) <= n {
+		return s
+	}
+	if n < 1 {
+		return ""
+	}
+	return string(r[:n-1]) + "…"
+}
+
+// servingFlags: each server with how long it has been up; past two days it turns red, likely
+// forgotten
+func servingFlags(r lsRepo) string {
+	s := ""
+	for _, v := range r.Servers {
+		age := dim
+		if time.Now().Unix()-v.Since > 2*86400 {
+			age = red
+		}
+		s += " " + paint(cyan, "serving:"+portLinks(v.Ports)) + " " + paint(age, "("+ago(v.Since)+")")
+	}
+	return s
+}
+
+func repoLine(r lsRepo, rw, bw int) string {
+	flags := ""
+	for _, f := range [][2]string{{"modified", strconv.Itoa(r.Modified)}, {"untracked", strconv.Itoa(r.Untracked)}, {"unpushed", strconv.Itoa(r.Unpushed)}} {
+		if f[1] != "0" {
+			flags += " " + paint(flagColor[f[0]], f[1]+"-"+f[0])
+		}
+	}
+	if r.Review != "" {
+		flags += " " + paint(flagColor[r.Review], r.Review)
+	}
+	if r.CI != "" {
+		flags += " " + paint(flagColor["ci:"+r.CI], "ci:"+r.CI)
+	}
+	if r.Conflict {
+		flags += " " + paint(red, "conflict")
+	}
+	flags += servingFlags(r)
+	if r.Behind > 0 {
+		flags += " " + paint(yellow, strconv.Itoa(r.Behind)+"-behind")
+	}
+	// a terminal that shows links gets #123 opening the PR; anywhere else, the whole URL
+	pr := r.PR
+	if pr != "" && color() {
+		pr = link(pr, "#"+path.Base(pr))
+	}
+	// padded before painting, so the columns line up with or without color
+	return fmt.Sprintf("  %-*s %s %s%s %s", rw, r.Repo, paint(dim, fmt.Sprintf("%-*s", bw, r.Branch)),
+		paint(stageColor[r.Stage], fmt.Sprintf("%-6s", r.Stage)), flags, paint(dim, pr))
 }
 
 // goal: the first section of TASK.md is the goal, whatever its heading
@@ -263,10 +421,7 @@ func ago(since int64) string {
 func portLinks(ports []uint32) string {
 	l := make([]string, len(ports))
 	for i, p := range ports {
-		l[i] = strconv.Itoa(int(p))
-		if color() {
-			l[i] = fmt.Sprintf("\x1b]8;;http://localhost:%d\x1b\\%d\x1b]8;;\x1b\\", p, p)
-		}
+		l[i] = link(fmt.Sprintf("http://localhost:%d", p), strconv.Itoa(int(p)))
 	}
 	return strings.Join(l, ",")
 }
