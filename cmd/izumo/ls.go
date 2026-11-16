@@ -3,12 +3,15 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/term"
 )
 
 // parallel runs f for 0..n-1, 8 at a time: each call costs a few git calls and maybe a gh API call
@@ -288,6 +291,10 @@ func contextHook() {
 
 // agentHook is the Claude Code hook (hooks/hooks.json): record what the agent in this task is
 // doing. It fires in every session, so it stays cheap, silent and exits 0 outside a task.
+//
+// A session started at the root moves between tasks as it cd's, and a Stop sent from elsewhere
+// never reached the task it left: that task said "working" for days. So .agent names the
+// session, and any event of that session clears what it left in the tasks it is no longer in.
 func agentHook(args []string) {
 	if len(args) == 0 {
 		return
@@ -298,9 +305,11 @@ func agentHook(args []string) {
 	default:
 		return
 	}
+	session := hookSession()
+	task, root := "", ""
 	wd, _ := os.Getwd()
 	for _, start := range []string{wd, os.Getenv("CLAUDE_PROJECT_DIR")} {
-		if start == "" {
+		if start == "" || task != "" {
 			continue
 		}
 		d, err := realPath(start)
@@ -308,15 +317,49 @@ func agentHook(args []string) {
 			continue
 		}
 		for ; path.Dir(d) != d; d = path.Dir(d) {
-			if isFile(path.Join(d, ".task")) && isFile(path.Join(path.Dir(path.Dir(d)), ".izumo")) {
-				f := path.Join(d, ".agent")
-				if state == "end" {
-					os.Remove(f)
-				} else {
-					_ = os.WriteFile(f, []byte(fmt.Sprintf("%s %d\n", state, time.Now().Unix())), 0o644)
-				}
-				return
+			if task == "" && isFile(path.Join(d, ".task")) && isFile(path.Join(path.Dir(path.Dir(d)), ".izumo")) {
+				task = d
+			}
+			if root == "" && isFile(path.Join(d, ".izumo")) {
+				root = d
 			}
 		}
 	}
+	if task != "" {
+		f := path.Join(task, ".agent")
+		if state == "end" {
+			os.Remove(f)
+		} else {
+			_ = os.WriteFile(f, []byte(fmt.Sprintf("%s %d %s\n", state, time.Now().Unix(), session)), 0o644)
+		}
+	}
+	if session == "" || root == "" {
+		return
+	}
+	for _, t := range subdirs(path.Join(root, "tasks")) {
+		d := path.Join(root, "tasks", t)
+		if d == task {
+			continue
+		}
+		b, _ := os.ReadFile(path.Join(d, ".agent"))
+		if f := strings.Fields(string(b)); len(f) >= 3 && f[2] == session {
+			os.Remove(path.Join(d, ".agent"))
+		}
+	}
+}
+
+// hookSession: the session_id Claude Code passes a hook on stdin; "" without one (a terminal, or
+// an id that would not fit in .agent's one line)
+func hookSession() string {
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		return ""
+	}
+	var in struct {
+		SessionID string `json:"session_id"`
+	}
+	_ = json.NewDecoder(io.LimitReader(os.Stdin, 1<<20)).Decode(&in)
+	if strings.ContainsAny(in.SessionID, " \t\r\n") {
+		return ""
+	}
+	return in.SessionID
 }
