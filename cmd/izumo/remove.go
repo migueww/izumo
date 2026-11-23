@@ -521,7 +521,7 @@ func unknownFiles(t string) []string {
 	for _, e := range es {
 		f := e.Name()
 		switch f {
-		case ".task", ".agent", ".removing", "TASK.md", "AGENTS.md", "CLAUDE.md", t + ".code-workspace":
+		case ".task", ".agent", ".removing", ".shipped", "TASK.md", "AGENTS.md", "CLAUDE.md", t + ".code-workspace":
 			continue
 		}
 		if isFile(path.Join(dir, f, ".git")) || listed[f] {

@@ -130,12 +130,16 @@ says 'feat-x  ship the whole thing to everyone today' ls feat-x
 dev fetch -q && dev merge -q --no-ff origin/feat-x -m merge && dev push -q origin hml
 refuses 'a is not in prod (base)' done feat-x
 out=$("$IZ" ls feat-x) && ! grep -q 'ready' <<<"$out" || fail "ready before prod: $out"
+# on a terminal, what the base has and prod doesn't yet; the merge commit itself doesn't count
+out=$(IZUMO_COLOR=1 NO_COLOR=1 "$IZ" ls 2>/dev/null) && grep -qxF '⛩ waiting for prod (1)' <<<"$out" &&
+  grep -qE '^  a 1 commit in hml, not in main · oldest [0-9]+s$' <<<"$out" || fail "base ahead of prod not shown: $out"
 promote
 says 'feat-x  [ready: izumo done]' ls --fetch feat-x
 jsays 'ready=true' feat-x
+grep -qx "a $(git -C tasks/feat-x/a rev-parse HEAD)" tasks/feat-x/.shipped || fail "prod not remembered: $(cat tasks/feat-x/.shipped)"
 # on a terminal, tasks done would take fold into one line each under a heading; one named keeps its rows
 out=$(IZUMO_COLOR=1 NO_COLOR=1 "$IZ" ls 2>/dev/null) && grep -qxF '⛩ ready to go home (1) · izumo done' <<<"$out" &&
-  grep -qx '  feat-x' <<<"$out" || fail "ready task not folded on a terminal: $out"
+  grep -qx '  feat-x' <<<"$out" && ! grep -q 'waiting for prod' <<<"$out" || fail "ready task not folded on a terminal: $out"
 out=$(IZUMO_COLOR=1 NO_COLOR=1 "$IZ" ls feat-x 2>/dev/null) && grep -qF 'feat-x  [ready: izumo done]' <<<"$out" ||
   fail "a task named on a terminal got folded: $out"
 mkdir tasks/feat-x/notes  # a file done would keep the task for: not ready either
@@ -191,6 +195,7 @@ IZUMO_GH=$GHFAKE refuses 'a is not in prod (base)' done feat-y
 promote
 IZUMO_GH=$GHFAKE says 'base' ls feat-y          # ls reads the last fetch...
 IZUMO_GH=$GHFAKE says 'prod' ls --fetch feat-y  # ...unless asked to fetch
+says 'prod' ls feat-y  # proven once, remembered: gh isn't asked again
 IZUMO_GH=$GHFAKE iz done feat-y >/dev/null || fail "squash: done after prod"
 
 # the PR's head was never fetched (a commit made in GitHub's editor, the branch deleted after the
@@ -278,6 +283,10 @@ jsays 'agent={"state": "waiting"' bare
 (cd "$T" && iz _agent working) || fail "_agent outside a task must exit 0"
 CLAUDE_PROJECT_DIR="$T/root/tasks/bare" iz _agent working
 says '[agent working' ls bare
+# working for hours without a reply: the session died before its Stop
+printf 'working %s s9\n' $(($(date +%s) - 7 * 3600)) > tasks/bare/.agent
+says '[agent stale: working 7h]' ls bare
+jsays '"stale": true}' bare
 (cd tasks/bare && iz _agent end)
 [ ! -e tasks/bare/.agent ] || fail "_agent end left .agent"
 # a session that moves on clears what it left in the task: its Stop, sent from elsewhere, can't
