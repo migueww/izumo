@@ -51,3 +51,12 @@ func TestSuggest(t *testing.T) {
 		}
 	}
 }
+
+func TestCols(t *testing.T) {
+	// wide characters and emoji take two columns; marks, selectors and skin tones join the one before
+	for s, want := range map[string]int{"ship": 4, "✅ done": 7, "日本語": 6, "é": 1, "⚠️": 1, "👍🏽": 2, "→ ⛩": 3} {
+		if got := cols(s); got != want {
+			t.Errorf("cols(%q) = %d, want %d", s, got, want)
+		}
+	}
+}

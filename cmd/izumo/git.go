@@ -157,7 +157,8 @@ type repoState struct {
 	branch, head                  string
 	stage                         stage
 	modified, untracked, unpushed int
-	behind                        int // a reference: commits its base got since; izumo pull catches up
+	behind                        int   // a reference: commits its base got since; izumo pull catches up
+	noPR                          int64 // pushed and gh knows no PR for it: the last commit's time
 	pr, review, ci                string
 	conflict                      bool // open PR that can't merge into its base
 }
@@ -210,8 +211,9 @@ func stateOf(t task, repo string) (s repoState, err error) {
 		return s, nil
 	}
 	// oldest reflog entry = where the branch started; still there means no work on it
-	reflog, _ := gitOut(wt, "log", "-g", "--format=%H", "refs/heads/"+s.branch)
-	created := reflog[strings.LastIndex(reflog, "\n")+1:]
+	reflog, _ := gitOut(wt, "log", "-g", "--format=%H %ct", "refs/heads/"+s.branch)
+	created, _, _ := strings.Cut(reflog[strings.LastIndex(reflog, "\n")+1:], " ")
+	_, last, _ := strings.Cut(reflog[:strings.IndexByte(reflog+"\n", '\n')], " ") // newest entry: HEAD
 	baseR, err := baseRef(src, t.base)
 	if err != nil {
 		return s, err
@@ -236,8 +238,11 @@ func stateOf(t task, repo string) (s repoState, err error) {
 	if s.stage == stageWip && s.unpushed == 0 {
 		s.stage = stagePushed
 	}
-	p := prOf(wt, s.branch)
+	p, asked := prOf(wt, s.branch)
 	if p == nil {
+		if asked && s.stage == stagePushed {
+			s.noPR, _ = strconv.ParseInt(last, 10, 64)
+		}
 		return s, nil
 	}
 	switch p.State {
@@ -380,23 +385,26 @@ func (p pr) ci() string {
 	return "passing"
 }
 
-// prOf: the latest PR whose head is this branch, nil without gh or a PR
-func prOf(wt, branch string) *pr {
+// prOf: the latest PR whose head is this branch, nil without gh or a PR; asked: gh answered
+func prOf(wt, branch string) (p *pr, asked bool) {
 	gh := os.Getenv("IZUMO_GH")
 	if gh == "" {
 		gh = "gh"
 	}
 	bin, err := exec.LookPath(gh)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	c := exec.Command(bin, "pr", "list", "--head", branch, "--state", "all", "--limit", "1",
 		"--json", "number,url,state,mergeCommit,headRefOid,reviewDecision,mergeable,statusCheckRollup")
 	c.Dir = wt
 	out, err := c.Output()
 	var prs []pr
-	if err != nil || json.Unmarshal(out, &prs) != nil || len(prs) == 0 {
-		return nil
+	if err != nil || json.Unmarshal(out, &prs) != nil {
+		return nil, false
 	}
-	return &prs[0]
+	if len(prs) == 0 {
+		return nil, true
+	}
+	return &prs[0], true
 }
