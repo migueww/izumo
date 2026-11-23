@@ -119,7 +119,10 @@ jsays 'feat-x/b repo="b" branch="feat-x" stage="empty"'
 # colors only when asked (the shim asks on a terminal), and NO_COLOR wins
 out=$(IZUMO_COLOR=1 "$IZ" ls feat-x 2>/dev/null) && grep -qF $'\e[33mpushed' <<<"$out" || fail "no color with IZUMO_COLOR=1: $out"
 out=$(IZUMO_COLOR=1 NO_COLOR=1 "$IZ" ls feat-x 2>/dev/null) && ! grep -qF $'\e[' <<<"$out" || fail "color despite NO_COLOR: $out"
-# on a terminal a long goal is cut at the width; piped it stays whole
+# on a terminal a long goal is cut at the width, a wide character taking two columns; piped it stays whole
+printf '# feat-x\n\n## Goal\n✅ 日本語 ship it to everyone\n' > tasks/feat-x/TASK.md
+out=$(IZUMO_COLOR=1 NO_COLOR=1 COLUMNS=20 "$IZ" ls feat-x 2>/dev/null) && grep -qxF 'feat-x  ✅ 日本語 s…' <<<"$out" ||
+  fail "goal with wide characters not cut at the width: $out"
 printf '# feat-x\n\n## Goal\nship the whole thing to everyone today\n' > tasks/feat-x/TASK.md
 out=$(IZUMO_COLOR=1 NO_COLOR=1 COLUMNS=30 "$IZ" ls feat-x 2>/dev/null) && grep -qxF 'feat-x  ship the whole thing …' <<<"$out" ||
   fail "goal not cut at the width: $out"
@@ -283,6 +286,13 @@ jsays 'agent={"state": "waiting"' bare
 (cd "$T" && iz _agent working) || fail "_agent outside a task must exit 0"
 CLAUDE_PROJECT_DIR="$T/root/tasks/bare" iz _agent working
 says '[agent working' ls bare
+# pushed two days ago and gh knows no PR: it needs you. Without gh, nobody knows: nothing said
+iz new nopr a >/dev/null
+GIT_COMMITTER_DATE="@$(($(date +%s) - 2 * 86400)) +0000" git -C tasks/nopr/a commit -q --allow-empty -m old
+git -C tasks/nopr/a push -q origin nopr
+FAKE_PR='[]' IZUMO_GH=$GHFAKE says 'pushed no-pr (2d)' ls nopr
+out=$(iz ls nopr) && ! grep -q 'no-pr' <<<"$out" || fail "no-pr without asking gh: $out"
+iz rm nopr --discard >/dev/null 2>&1 || fail "rm nopr"
 # working for hours without a reply: the session died before its Stop
 printf 'working %s s9\n' $(($(date +%s) - 7 * 3600)) > tasks/bare/.agent
 says '[agent stale: working 7h]' ls bare
@@ -563,11 +573,14 @@ for r in slow1 slow2; do
   git init -q -b main "$r" && git -C "$r" commit -q --allow-empty -m init && git -C "$r" config protocol.ext.allow always
   git -C "$r" update-ref refs/remotes/origin/main HEAD && git -C "$r" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
 done
-git -C slow1 remote add origin "ext::sh -c 'sleep 1; exit 1'"  # fails while slow2 still fetches
-git -C slow2 remote add origin "ext::sh -c 'sleep 2; exit 1'"
+git -C slow1 remote add origin "ext::sh -c sleep% 1;% exit% 1"  # fails while slow2 still fetches
+git -C slow2 remote add origin "ext::sh -c sleep% 2;% exit% 1"
 iz new slow slow1 slow2 >/dev/null 2>&1
-out=$(IZUMO_COLOR=1 NO_COLOR=1 "$IZ" ls --fetch slow 2>&1 >/dev/null) && grep -qF 'slow1: fetch failed' <<<"$out" &&
-  ! grep -q '[0-9]izumo:' <<<"$out" || fail "a message ran into the bar: $out"
+out=$(IZUMO_COLOR=1 NO_COLOR=1 IZUMO_ERR_TTY=1 "$IZ" ls --fetch slow 2>&1 >/dev/null) && grep -qF 'slow1: fetch failed' <<<"$out" &&
+  grep -qF '⛩ fetching' <<<"$out" && ! grep -q '[0-9]izumo:' <<<"$out" || fail "a message ran into the bar: $out"
+# stderr not on a terminal (izumo ls 2>log): no bar there, even with stdout on one
+out=$(IZUMO_COLOR=1 NO_COLOR=1 IZUMO_ERR_TTY=0 "$IZ" ls --fetch slow 2>&1 >/dev/null) && ! grep -qF '⛩' <<<"$out" ||
+  fail "the bar went into a file: $out"
 iz rm slow >/dev/null 2>&1 && rm -rf slow1 slow2 || fail "rm slow"
 
 echo ok

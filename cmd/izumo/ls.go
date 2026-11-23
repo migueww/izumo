@@ -73,6 +73,7 @@ type lsRepo struct {
 	Serving   []uint32   `json:"serving"`  // every port of the servers below
 	Servers   []lsServer `json:"servers"`
 	Behind    int        `json:"behind"` // a reference: commits its base got since; izumo pull catches up
+	NoPR      int64      `json:"-"`      // pushed, no PR: the last commit's time
 }
 
 func cmdLs(args []string) error {
@@ -149,7 +150,7 @@ func cmdLs(args []string) error {
 			k++
 			lr := lsRepo{Repo: r, Branch: s.branch, Stage: s.stage, Dirty: s.dirty(), Modified: s.modified,
 				Untracked: s.untracked, Unpushed: s.unpushed, Behind: s.behind, PR: s.pr, Review: s.review, CI: s.ci,
-				Conflict: s.conflict, Serving: []uint32{}, Servers: []lsServer{}}
+				Conflict: s.conflict, NoPR: s.noPR, Serving: []uint32{}, Servers: []lsServer{}}
 			for _, v := range srv {
 				if v.task == t.name && v.repo == r {
 					lr.Serving = append(lr.Serving, v.ports...)
@@ -300,13 +301,14 @@ func printLs(list []lsTask, all bool, gaps []gap) {
 }
 
 // needsYou: the task waits on you, not on others: changes asked in review, failing CI, a
-// conflict, commits only here, an agent asking, or a removal stopped halfway
+// conflict, commits only here, a branch pushed a day ago with no PR, an agent asking, or a
+// removal stopped halfway
 func needsYou(t lsTask) bool {
 	if t.Removing || (t.Agent != nil && t.Agent.State == "waiting") {
 		return true
 	}
 	for _, r := range t.Repos {
-		if r.Review == "changes-requested" || r.CI == "failing" || r.Conflict || r.Unpushed > 0 {
+		if r.Review == "changes-requested" || r.CI == "failing" || r.Conflict || r.Unpushed > 0 || forgotten(r) {
 			return true
 		}
 	}
@@ -319,6 +321,9 @@ func quiet(r lsRepo) bool {
 	return tty() && (r.Stage == stageEmpty || r.Stage == stageRef) &&
 		r.Modified+r.Untracked+r.Unpushed+r.Behind == 0 && len(r.Servers) == 0
 }
+
+// forgotten: pushed over a day ago and still no PR. Younger, the PR is likely on its way.
+func forgotten(r lsRepo) bool { return r.NoPR > 0 && time.Now().Unix()-r.NoPR > 86400 }
 
 func b2i(b bool) int {
 	if b {
@@ -338,15 +343,48 @@ func agentTag(t lsTask) (code, s string) {
 
 // clip: s cut to n columns with an ellipsis; whole when the width is unknown
 func clip(s string, n int) string {
-	r := []rune(s)
-	if width() == 0 || len(r) <= n {
+	if width() == 0 || cols(s) <= n {
 		return s
 	}
 	if n < 1 {
 		return ""
 	}
-	return string(r[:n-1]) + "…"
+	w := 0
+	for i, r := range s {
+		if w += runeCols(r); w > n-1 {
+			return s[:i] + "…"
+		}
+	}
+	return ""
 }
+
+// cols: the columns s takes on a terminal
+func cols(s string) int {
+	n := 0
+	for _, r := range s {
+		n += runeCols(r)
+	}
+	return n
+}
+
+// runeCols: 2 for East Asian wide characters and emoji, 0 for what joins the one before (marks,
+// variation selectors, skin tones, the zero-width joiner), else 1.
+// ponytail: ranges by hand, not the whole Unicode table; a rare symbol outside them counts 1
+func runeCols(r rune) int {
+	switch {
+	case r >= 0x300 && r <= 0x36F, r == 0x200D, r >= 0xFE00 && r <= 0xFE0F, r >= 0x1F3FB && r <= 0x1F3FF:
+		return 0
+	case r >= 0x1100 && r <= 0x115F, r >= 0x2E80 && r <= 0xA4CF && r != 0x303F, r >= 0xAC00 && r <= 0xD7A3,
+		r >= 0xF900 && r <= 0xFAFF, r >= 0xFE30 && r <= 0xFE4F, r >= 0xFF00 && r <= 0xFF60, r >= 0xFFE0 && r <= 0xFFE6,
+		r >= 0x1F300 && r <= 0x1F64F, r >= 0x1F680 && r <= 0x1F6FF, r >= 0x1F900 && r <= 0x1FAFF,
+		r >= 0x20000 && r <= 0x3FFFD, strings.ContainsRune(wideSymbols, r):
+		return 2
+	}
+	return 1
+}
+
+// the symbols below U+3000 that terminals draw as emoji, two columns wide
+const wideSymbols = "⌚⌛⏩⏪⏫⏬⏰⏳◽◾☔☕♈♉♊♋♌♍♎♏♐♑♒♓♿⚓⚡⚪⚫⚽⚾⛄⛅⛎⛔⛪⛲⛳⛵⛺⛽✅✊✋✨❌❎❓❔❕❗➕➖➗➰➿⬛⬜⭐⭕"
 
 // servingFlags: each server with how long it has been up; past two days it turns red, likely
 // forgotten
@@ -377,6 +415,9 @@ func repoLine(r lsRepo, rw, bw int) string {
 	}
 	if r.Conflict {
 		flags += " " + paint(red, "conflict")
+	}
+	if forgotten(r) {
+		flags += " " + paint(red, "no-pr ("+ago(r.NoPR)+")")
 	}
 	flags += servingFlags(r)
 	if r.Behind > 0 {

@@ -21,6 +21,15 @@ var tty = sync.OnceValue(func() bool {
 	return term.IsTerminal(int(os.Stdout.Fd()))
 })
 
+// errTTY: stderr reaches a terminal, so the bar can draw there and not into a file.
+// IZUMO_ERR_TTY says it where the binary can't tell (the shim sets it under Git Bash's terminal).
+var errTTY = sync.OnceValue(func() bool {
+	if v := os.Getenv("IZUMO_ERR_TTY"); v != "" {
+		return v == "1"
+	}
+	return term.IsTerminal(int(os.Stderr.Fd()))
+})
+
 // color: ls paints stages and flags on a terminal; NO_COLOR turns it off
 var color = sync.OnceValue(func() bool {
 	return os.Getenv("NO_COLOR") == "" && tty() && enableANSI()
@@ -72,7 +81,7 @@ func link(url, text string) string {
 // tick, so a quick ls never shows it.
 func gather(verb string, n *atomic.Int32, total int) (stop func()) {
 	// NO_COLOR takes the color away, not the bar
-	if !tty() || !enableANSI() || total == 0 {
+	if !tty() || !errTTY() || !enableANSI() || total == 0 {
 		return func() {}
 	}
 	quit, done := make(chan struct{}), make(chan struct{})
