@@ -188,9 +188,40 @@ tool call, so they cost nothing noticeable. A permission you just approved still
 shows `waiting` until the turn ends. A session that died mid-turn never sends its end, so
 `working` for over six hours shows as `stale`.
 
+## With a task tracker
+
+A card in ClickUp, Linear, Jira or GitHub Projects is one piece of work, whatever repos it
+takes. So is an izumo task. izumo doesn't talk to any tracker, and doesn't need to:
+
+- **Name the task after the card**, and keep the card's link in `TASK.md`. A
+  `TASK_TEMPLATE` with a section for it does that for every task:
+
+  ```markdown
+  # {{task}}
+
+  ## Goal
+
+  ## Card
+
+  ## Status / next step
+  ```
+
+- **`izumo ls --json` is the state the card follows.** For each repo it gives the PR with its
+  review and CI, whether the work reached the base branch (`base`) and production (`prod`),
+  and what still exists only on your machine. Whatever moves the card, a script or an agent
+  with the tracker's tools, reads it there instead of asking GitHub repo by repo.
+- **Each keeps its own part.** The card has what was asked and what was decided, the PRs
+  have the code, and `TASK.md` keeps only what the next session needs.
+- **Hooks for the rest.** `post_add` runs in each new worktree and `pre_remove` before one
+  goes away, if your tracker needs to hear about either.
+
+With an agent that has the tracker's tools, "update the card of task X" is enough: the
+skill points it at the link in `TASK.md` and the state in `ls --json`.
+
 ## Not doing
 
-izumo doesn't run or orchestrate agents, clone your repos, open PRs, start servers,
+izumo doesn't run or orchestrate agents, clone your repos, open PRs, talk to your task
+tracker, start servers,
 assign ports or rebase branches. Your other tools do that.
 
 ## Why "izumo"
