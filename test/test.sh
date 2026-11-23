@@ -573,8 +573,8 @@ for r in slow1 slow2; do
   git init -q -b main "$r" && git -C "$r" commit -q --allow-empty -m init && git -C "$r" config protocol.ext.allow always
   git -C "$r" update-ref refs/remotes/origin/main HEAD && git -C "$r" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
 done
-git -C slow1 remote add origin "ext::sh -c 'sleep 1; exit 1'"  # fails while slow2 still fetches
-git -C slow2 remote add origin "ext::sh -c 'sleep 2; exit 1'"
+git -C slow1 remote add origin "ext::sh -c sleep% 1;% exit% 1"  # fails while slow2 still fetches
+git -C slow2 remote add origin "ext::sh -c sleep% 2;% exit% 1"
 iz new slow slow1 slow2 >/dev/null 2>&1
 out=$(IZUMO_COLOR=1 NO_COLOR=1 IZUMO_ERR_TTY=1 "$IZ" ls --fetch slow 2>&1 >/dev/null) && grep -qF 'slow1: fetch failed' <<<"$out" &&
   grep -qF '⛩ fetching' <<<"$out" && ! grep -q '[0-9]izumo:' <<<"$out" || fail "a message ran into the bar: $out"
