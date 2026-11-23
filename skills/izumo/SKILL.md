@@ -60,4 +60,9 @@ must be on PATH; if it is missing, point the user to https://github.com/migueww/
   user before the real run, then pass `--stop`, or `--no-stop` if they want them left
   running. Without either flag the removal refuses, since you have no terminal.
 - `TASK.md` is local. When opening a PR, carry the decisions reviewers need into its
-  description.
+  description. A task with PRs in several repos: link each PR to the others in its
+  description ("Part of: web-front#42"), so a reviewer sees the whole change; their URLs
+  are in `izumo ls <task> --json`.
+- **Task trackers:** when `TASK.md` links a card (ClickUp, Linear, Jira...) and you have that
+  tracker's tools, report progress there from `izumo ls <task> --json` (PR opened, merged
+  into the base, in prod), never from memory of what you did.
