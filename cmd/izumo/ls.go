@@ -55,6 +55,7 @@ type lsServer struct {
 type agent struct {
 	State string `json:"state"`
 	Since int64  `json:"since"`
+	Stale bool   `json:"stale"` // working for hours without a word: its session most likely died
 }
 
 type lsRepo struct {
@@ -115,6 +116,14 @@ func cmdLs(args []string) error {
 		}
 		srvc <- servers()
 	}()
+	gapc := make(chan []gap, 1)
+	go func() {
+		if o.has("--json") || !tty() || len(o.args) > 0 {
+			gapc <- nil
+			return
+		}
+		gapc <- parallel(len(clones), func(i int) gap { return gapOf(clones[i]) })
+	}()
 	var read atomic.Int32
 	stop := gather("gathering", &read, len(jobs))
 	states := parallel(len(jobs), func(i int) repoState {
@@ -126,7 +135,7 @@ func cmdLs(args []string) error {
 		}
 		return s
 	})
-	srv := <-srvc
+	srv, gaps := <-srvc, <-gapc
 	stop()
 
 	list := make([]lsTask, 0, len(tasks))
@@ -170,15 +179,15 @@ func cmdLs(args []string) error {
 		e.SetIndent("", "  ")
 		return e.Encode(list)
 	}
-	printLs(list, len(o.args) == 0)
+	printLs(list, len(o.args) == 0, gaps)
 	return nil
 }
 
 // printLs: on a terminal it reads at a glance: a summary, the tasks that need you first, quiet
 // repos folded into one line, goals cut at the width and the tasks done would take at the end,
-// one line each. Piped, every task keeps its rows, order and whole goal, for scripts. Tasks asked
+// one line each, then the repos whose base has work prod doesn't. Piped, every task keeps its rows, order and whole goal, for scripts. Tasks asked
 // for by name keep their rows too: whoever names one wants to see it.
-func printLs(list []lsTask, all bool) {
+func printLs(list []lsTask, all bool, gaps []gap) {
 	if len(list) == 0 {
 		if tty() {
 			fmt.Printf("%s the shrine is quiet. Start a task: izumo new <task> <repo...>\n", paint(vermilion, "⛩"))
@@ -274,6 +283,20 @@ func printLs(list []lsTask, all bool) {
 			fmt.Println("  " + head)
 		}
 	}
+	gaps = slices.DeleteFunc(gaps, func(g gap) bool { return g.n == 0 })
+	slices.SortFunc(gaps, func(a, b gap) int { return int(a.oldest - b.oldest) }) // longest wait first
+	if len(gaps) > 0 {
+		// merged but not promoted: a merge that came in just after a promotion waits here unseen
+		fmt.Printf("\n%s %s\n", paint(vermilion, "⛩"), paint(yellow, fmt.Sprintf("waiting for prod (%d)", len(gaps))))
+		w := 0
+		for _, g := range gaps {
+			w = max(w, len(g.repo))
+		}
+		for _, g := range gaps {
+			fmt.Printf("  %-*s %s\n", w, g.repo, paint(dim, fmt.Sprintf("%d %s in %s, not in %s · oldest %s",
+				g.n, map[bool]string{true: "commit", false: "commits"}[g.n == 1], g.base, g.prod, ago(g.oldest))))
+		}
+	}
 }
 
 // needsYou: the task waits on you, not on others: changes asked in review, failing CI, a
@@ -306,6 +329,9 @@ func b2i(b bool) int {
 
 // agentTag: what the task's agent is doing, and its color
 func agentTag(t lsTask) (code, s string) {
+	if t.Agent.Stale {
+		return dim, fmt.Sprintf("[agent stale: working %s]", ago(t.Agent.Since))
+	}
 	return map[string]string{"working": cyan, "waiting": yellow, "done": dim}[t.Agent.State],
 		fmt.Sprintf("[agent %s %s]", t.Agent.State, ago(t.Agent.Since))
 }
@@ -401,7 +427,8 @@ func agentOf(t string) *agent {
 	if err != nil || since < 0 {
 		return nil
 	}
-	return &agent{f[0], since}
+	// working stops at every reply (Stop), so a turn this long is a session that never sent it
+	return &agent{f[0], since, f[0] == "working" && time.Now().Unix()-since > 6*3600}
 }
 
 func ago(since int64) string {

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -163,9 +164,8 @@ type repoState struct {
 
 func (s repoState) dirty() bool { return s.modified+s.untracked > 0 }
 
-func stateOf(t task, repo string) (repoState, error) {
+func stateOf(t task, repo string) (s repoState, err error) {
 	wt, src := path.Join(tasksDir, t.name, repo), path.Join(root, repo)
-	var s repoState
 	// one call for branch, commit and changes
 	status, err := gitCmd(wt, "status", "--porcelain=v2", "--branch").Output()
 	if err != nil {
@@ -185,6 +185,16 @@ func stateOf(t task, repo string) (repoState, error) {
 			s.modified++
 		}
 	}
+	// a commit in prod stays there: what proved it once, the slowest part of ls, need not run again
+	if s.branch != "" && !t.isRef(repo) && wasShipped(t.name, repo, s.head) {
+		s.stage = stageProd
+		return s, nil
+	}
+	defer func() {
+		if err == nil && s.stage == stageProd {
+			markShipped(t.name, repo, s.head)
+		}
+	}()
 	n, _ := gitOut(wt, "rev-list", "--count", "HEAD", "--not", "--remotes")
 	s.unpushed, _ = strconv.Atoi(n)
 	if t.isRef(repo) {
@@ -252,6 +262,52 @@ func stateOf(t task, repo string) (repoState, error) {
 		s.unpushed = 0
 	}
 	return s, nil
+}
+
+var shippedMu sync.Mutex
+
+// .shipped holds "repo commit" per line: heads already proven in prod
+func wasShipped(t, repo, head string) bool {
+	b, _ := os.ReadFile(path.Join(tasksDir, t, ".shipped"))
+	return slices.Contains(strings.Split(string(b), "\n"), repo+" "+head)
+}
+
+func markShipped(t, repo, head string) {
+	shippedMu.Lock()
+	defer shippedMu.Unlock()
+	if wasShipped(t, repo, head) {
+		return
+	}
+	if f, err := os.OpenFile(path.Join(tasksDir, t, ".shipped"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+		fmt.Fprintf(f, "%s %s\n", repo, head)
+		f.Close()
+	}
+}
+
+// gap: commits in a clone's base branch that prod doesn't have yet, as last fetched
+type gap struct {
+	repo, base, prod string
+	n                int
+	oldest           int64 // unix seconds
+}
+
+// gapOf: --cherry-pick counts a promotion by cherry-pick, as shipped() does; --no-merges leaves
+// out a merge of prod back into base, which brings nothing to promote
+func gapOf(repo string) gap {
+	clone := path.Join(root, repo)
+	g := gap{repo: repo}
+	b, err1 := baseRef(clone, "")
+	p, err2 := prodRef(clone, "")
+	if err1 != nil || err2 != nil || b == p {
+		return g
+	}
+	g.base, g.prod = strings.TrimPrefix(b, "origin/"), strings.TrimPrefix(p, "origin/")
+	out, _ := gitOut(clone, "log", "--format=%ct", "--no-merges", "--cherry-pick", "--right-only", p+"..."+b)
+	for _, l := range strings.Fields(out) { // newest first
+		g.n++
+		g.oldest, _ = strconv.ParseInt(l, 10, 64)
+	}
+	return g
 }
 
 // inPR: is HEAD behind the PR's head, every local commit in the PR? The head may never have
